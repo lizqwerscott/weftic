@@ -1,0 +1,11 @@
+[providers.deepseek]
+type = "native"
+provide = "deepseek"
+name = "Deepseek"
+api_key = "<DEEPSEEK_API_KEY>"
+
+[providers.llamacpp]
+type = "openai"
+name = "Llamacpp remote"
+base_url = "<WEFTIC_LLAMACPP_HOST>"
+api_key = "<WEFTIC_LLAMACPP_HOST_API_KEY>"

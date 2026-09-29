@@ -1,0 +1,13 @@
+[package]
+name = "weftic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+arc-swap = "1.9.2"
+dotenvy = "0.15.7"
+figment = { version = "0.10.19", features = ["toml", "env"]}
+genai = "0.6.5"
+serde = "1.0.229"
+tokio = "1.53.1"
