@@ -2,10 +2,24 @@
 type = "native"
 provide = "deepseek"
 name = "Deepseek"
-api_key = "<DEEPSEEK_API_KEY>"
+
+[[providers.deepseek.models]]
+name = "deepseek-flash"
+model = "deepseek-flash"
+temperature = 0.7
+max_tokens = 8000
+reasoning_effort = "xhigh"
 
 [providers.llamacpp]
 type = "openai"
-name = "Llamacpp remote"
+name = "Llamacpp Local"
 base_url = "<WEFTIC_LLAMACPP_HOST>"
 api_key = "<WEFTIC_LLAMACPP_HOST_API_KEY>"
+
+[[providers.llamacpp.models]]
+name = "bonsai-27B"
+model = "Bonsai-27B-PQ2_0"
+
+[route]
+# main = "deepseek/deepseek-flash"
+main = "llamacpp/bonsai-27B"

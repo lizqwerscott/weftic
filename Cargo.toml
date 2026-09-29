@@ -8,6 +8,9 @@ anyhow = "1.0.104"
 arc-swap = "1.9.2"
 dotenvy = "0.15.7"
 figment = { version = "0.10.19", features = ["toml", "env"]}
+futures = "0.3.34"
 genai = "0.6.5"
 serde = "1.0.229"
 tokio = "1.53.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["std", "env-filter"] }
