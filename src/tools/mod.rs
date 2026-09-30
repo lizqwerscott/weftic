@@ -1,0 +1,148 @@
+pub mod files;
+
+use std::{collections::BTreeMap, fmt, pin::Pin, sync::Arc};
+
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+
+use genai::chat::{Tool as GenaiTool, ToolCall, ToolResponse};
+
+pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[derive(Debug)]
+pub enum ToolError {
+    UnknownTool { name: String },
+    InvalidArgs { tool: String, message: String },
+    Execuation { tool: String, message: String },
+}
+
+impl ToolError {
+    fn to_model_payload(&self) -> String {
+        let (tool, message) = match self {
+            Self::UnknownTool { name } => (name.as_str(), format!("unknow tool `{name}`")),
+            Self::InvalidArgs { tool, message } => {
+                (tool.as_str(), format!("invalid arguments: {message}"))
+            }
+            Self::Execuation { tool, message } => {
+                (tool.as_str(), format!("execuation failed: {message}"))
+            }
+        };
+
+        json!({"error": message, "tool": tool}).to_string()
+    }
+}
+
+#[derive(Debug)]
+pub enum ToolRegisterError {
+    Duplicate { name: String },
+}
+
+impl fmt::Display for ToolRegisterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Duplicate { name } => write!(f, "A tool named '{name}' already exists."),
+        }
+    }
+}
+
+impl std::error::Error for ToolRegisterError {}
+
+pub trait Tool: Send + Sync + 'static {
+    type Args: DeserializeOwned + Send;
+
+    const NAME: &'static str;
+
+    fn descrption(&self) -> &str;
+
+    fn parameters(&self) -> Value {
+        json!({"type": "object", "properties": {}, "additionProperties": false})
+    }
+
+    fn call<'a>(&'a self, args: Self::Args) -> BoxedFuture<'a, anyhow::Result<String>>;
+}
+
+pub trait DynTool: Send + Sync {
+    fn name(&self) -> &str;
+    fn declaration(&self) -> GenaiTool;
+    fn call_json<'a>(&'a self, args: Value) -> BoxedFuture<'a, Result<String, ToolError>>;
+}
+
+impl<T: Tool> DynTool for T {
+    fn name(&self) -> &str {
+        T::NAME
+    }
+
+    fn declaration(&self) -> GenaiTool {
+        GenaiTool::new(T::NAME)
+            .with_description(self.descrption())
+            .with_schema(self.parameters())
+    }
+
+    fn call_json<'a>(&'a self, args: Value) -> BoxedFuture<'a, Result<String, ToolError>> {
+        Box::pin(async move {
+            let type_args =
+                serde_json::from_value::<T::Args>(args).map_err(|e| ToolError::InvalidArgs {
+                    tool: T::NAME.to_string(),
+                    message: e.to_string(),
+                })?;
+            match self.call(type_args).await {
+                Ok(res) => Ok(res),
+                Err(e) => Err(ToolError::Execuation {
+                    tool: T::NAME.to_string(),
+                    message: e.to_string(),
+                }),
+            }
+        })
+    }
+}
+
+pub struct ToolRouter {
+    tools: BTreeMap<String, Arc<dyn DynTool>>,
+}
+
+impl Default for ToolRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToolRouter {
+    pub fn new() -> Self {
+        Self {
+            tools: BTreeMap::new(),
+        }
+    }
+
+    pub fn register<T: Tool>(&mut self, tool: T) -> Result<&mut Self, ToolRegisterError> {
+        let name = T::NAME.to_string();
+        if self.tools.contains_key(&name) {
+            return Err(ToolRegisterError::Duplicate { name });
+        }
+        self.tools.insert(name, Arc::new(tool));
+        Ok(self)
+    }
+
+    pub fn declarations(&self) -> Vec<GenaiTool> {
+        self.tools.values().map(|tool| tool.declaration()).collect()
+    }
+
+    pub async fn dispatch(&self, call: &ToolCall) -> ToolResponse {
+        ToolResponse::from_tool_call(
+            call,
+            match self.tools.get(&call.fn_name) {
+                Some(tool) => match tool.call_json(call.fn_arguments.clone()).await {
+                    Ok(res) => res,
+                    Err(e) => e.to_model_payload(),
+                },
+                None => ToolError::UnknownTool {
+                    name: call.fn_name.clone(),
+                }
+                .to_model_payload(),
+            },
+        )
+    }
+
+    pub async fn dispatch_all(&self, call: &[ToolCall]) -> Vec<ToolResponse> {
+        futures::future::join_all(call.iter().map(|call| self.dispatch(call))).await
+    }
+}

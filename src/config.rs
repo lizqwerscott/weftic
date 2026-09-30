@@ -5,7 +5,7 @@ use std::path::Path;
 
 use figment::{
     Figment,
-    providers::{Env, Format, Toml},
+    providers::{Format, Toml},
 };
 use genai::Client;
 use genai::ModelIden;

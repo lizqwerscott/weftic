@@ -1,16 +1,11 @@
+use std::io::{self, Write};
+
 use anyhow::{Result, anyhow};
 
-use genai::{
-    Client,
-    chat::{
-        ChatMessage, ChatOptions, ChatRequest,
-        printer::{PrintChatStreamOptions, print_chat_stream},
-    },
-};
 use tracing_subscriber::EnvFilter;
 
 use weftic::agent_engine::AgentEngine;
-use weftic::config::{ProviderConfig, load_model_config};
+use weftic::config::load_model_config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,10 +22,23 @@ async fn main() -> Result<()> {
 
     if let Some((client, model)) = model_register.get_client_model() {
         let mut agent_engine = AgentEngine::new(client, model, "你是一个 AI 助手".to_string());
+        agent_engine.register_buildin_tools()?;
 
-        let question = "你好".to_string();
+        loop {
+            let mut input = String::new();
+            print!("> ");
+            io::stdout().flush()?;
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
 
-        agent_engine.run_turn(question).await?;
+            if input.starts_with("/") {
+                if input == "/exit" {
+                    break;
+                }
+            } else {
+                agent_engine.run_turn(input.to_string()).await?;
+            }
+        }
     } else {
         return Err(anyhow!("not find provider and model!"));
     }
