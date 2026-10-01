@@ -1,12 +1,12 @@
-use std::io::{self, Write};
+use rustyline::error::ReadlineError;
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
-
 use tracing_subscriber::EnvFilter;
 
 use weftic::agent_engine::AgentEngine;
 use weftic::config::load_model_config;
+use weftic::tui::input::build_input;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,19 +25,27 @@ async fn main() -> Result<()> {
         let mut agent_engine = AgentEngine::new(client, model, "你是一个 AI 助手".to_string());
         agent_engine.register_buildin_tools()?;
 
+        let (_, mut rl) = build_input()?;
+
         loop {
-            let mut input = String::new();
-            print!("> ");
-            io::stdout().flush()?;
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim();
+            let readline = rl.readline("> ");
+            match readline {
+                Ok(line) => {
+                    if line == "/exit" {
+                        break;
+                    }
 
-            if input == "/exit" {
-                break;
-            }
-
-            if let Err(err) = agent_engine.run_turn(input.to_string()).await {
-                println!("{}: {}", "Error".red(), err.to_string());
+                    if let Err(err) = agent_engine.run_turn(line.to_string()).await {
+                        println!("{}: {}", "Error".red(), err.to_string());
+                    }
+                }
+                Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
+                    println!("Exit");
+                    break;
+                }
+                Err(err) => {
+                    println!("Read error: {}", err.to_string());
+                }
             }
         }
     } else {

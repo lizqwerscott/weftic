@@ -9,7 +9,7 @@ use genai::{
 
 use crate::tools::ToolRouter;
 use crate::tools::files::ReadTool;
-use crate::tui::StreamRenderer;
+use crate::tui::render::StreamRenderer;
 
 pub struct AgentEngine {
     client: Client,
