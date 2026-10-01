@@ -3,6 +3,7 @@ use std::env;
 use std::fmt;
 use std::path::Path;
 
+use colored::Colorize;
 use figment::{
     Figment,
     providers::{Format, Toml},
@@ -153,39 +154,108 @@ impl ModelRegister {
     }
 
     pub fn print_info(&self) {
-        println!("Route: {}", self.route.main);
+        let parts: Vec<&str> = self.route.main.split('/').collect();
+        let activate_provider_name = parts.first();
+        let activate_model = parts.get(1);
 
-        println!("==================");
+        println!();
+        println!("{}", "Providers".bright_white().bold());
 
         for (k, p) in self.providers.iter() {
+            let active = if let Some(name) = activate_provider_name {
+                k == name
+            } else {
+                false
+            };
+
+            let bullet = if active {
+                "▸".green().bold().to_string()
+            } else {
+                "•".bright_black().to_string()
+            };
+
             match p {
                 ProviderConfig::Native {
                     name,
                     provide,
                     models,
                 } => {
-                    println!("{}({}) from {} native:", name, k, provide);
+                    println!(
+                        "  {} {}({}) from {} native",
+                        bullet,
+                        name.bright_white().bold(),
+                        k,
+                        provide.to_string().bright_white()
+                    );
+
+                    print!("    {}: ", "models".bright_black());
+
+                    let mut first_model = true;
 
                     for model in models.iter() {
-                        println!("Model: {}", model.name);
+                        let model_active = if let Some(a_name) = activate_model {
+                            *a_name == model.name
+                        } else {
+                            false
+                        };
+
+                        if first_model {
+                            first_model = false;
+                        } else {
+                            print!(", ")
+                        }
+
+                        if model_active {
+                            print!("{}", model.name.green());
+                        } else {
+                            print!("{}", model.name.yellow());
+                        }
                     }
+
+                    println!();
                 }
                 ProviderConfig::Openai {
                     name,
                     base_url,
-                    api_key,
                     models,
+                    ..
                 } => {
-                    println!("{}({}):", name, k);
-                    println!("Base url: {}", base_url);
+                    println!(
+                        "  {} {}({})",
+                        bullet,
+                        name.bright_white().bold(),
+                        k.bright_white()
+                    );
+
+                    println!("    {}: {}", "Base url".bright_black(), base_url.cyan());
+
+                    print!("    {}: ", "models".bright_black());
+                    let mut first_model = true;
 
                     for model in models.iter() {
-                        println!("Model: {}", model.name);
+                        let model_active = if let Some(a_name) = activate_model {
+                            *a_name == model.name
+                        } else {
+                            false
+                        };
+
+                        if first_model {
+                            first_model = false;
+                        } else {
+                            print!(", ")
+                        }
+
+                        if model_active {
+                            print!("{}", model.name.green());
+                        } else {
+                            print!("{}", model.name.yellow());
+                        }
                     }
+                    println!();
                 }
             }
-            println!("==================");
         }
+        println!();
     }
 }
 

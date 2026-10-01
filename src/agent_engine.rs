@@ -1,5 +1,3 @@
-use colored::Colorize;
-
 use futures::StreamExt;
 
 use anyhow::Result;
@@ -11,6 +9,7 @@ use genai::{
 
 use crate::tools::ToolRouter;
 use crate::tools::files::ReadTool;
+use crate::tui::StreamRenderer;
 
 pub struct AgentEngine {
     client: Client,
@@ -18,6 +17,7 @@ pub struct AgentEngine {
     chat_request: ChatRequest,
     tool_router: ToolRouter,
     max_iterations: usize,
+    stream_render: StreamRenderer,
 }
 
 impl AgentEngine {
@@ -28,6 +28,7 @@ impl AgentEngine {
             chat_request: ChatRequest::default().with_system(system_prompt),
             tool_router: ToolRouter::new(),
             max_iterations: 100,
+            stream_render: StreamRenderer::new(),
         }
     }
 
@@ -38,6 +39,8 @@ impl AgentEngine {
             .chat_request
             .clone()
             .with_tools(self.tool_router.declarations());
+
+        println!("registered tools: {:?}", self.tool_router.names());
 
         Ok(())
     }
@@ -65,32 +68,20 @@ impl AgentEngine {
             // let mut captured_reasoning: Option<String> = None;
             // let mut contents: Option<Vec<String>> = None;
             let mut usage: Option<Usage> = None;
-            let mut reasoning_start = false;
             let mut stop_reason: Option<StopReason> = None;
 
             while let Some(result) = chat_stream.stream.next().await {
                 match result? {
-                    ChatStreamEvent::Start => {
-                        println!("Stream started");
-                    }
+                    ChatStreamEvent::Start => {}
                     ChatStreamEvent::Chunk(chunk) => {
-                        if reasoning_start {
-                            println!("</think>");
-                            reasoning_start = false;
-                        }
-                        print!("{}", chunk.content);
+                        self.stream_render.render_content(&chunk.content);
                     }
 
                     ChatStreamEvent::ReasoningChunk(chunk) => {
-                        if !reasoning_start {
-                            println!("<think>");
-                            reasoning_start = true;
-                        }
-                        print!("{}", chunk.content.truecolor(128, 128, 128));
+                        self.stream_render.render_think(&chunk.content);
                     }
                     ChatStreamEvent::End(end) => {
-                        println!("\nStream ended");
-
+                        self.stream_render.finish();
                         // captured_reasoning = end.captured_reasoning_content;
                         usage = end.captured_usage;
                         stop_reason = end.captured_stop_reason;
@@ -137,6 +128,9 @@ impl AgentEngine {
                 match stop_reason {
                     StopReason::ToolCall(_) => {
                         let tool_responses = self.tool_router.dispatch_all(&tool_calls).await;
+                        self.stream_render
+                            .render_tool_calls(&tool_calls, &tool_responses);
+
                         let mut assistant_msg = ChatMessage::from(tool_calls);
                         if let Some(thoughts) = captured_thoughts {
                             let mut parts = assistant_msg.content.into_parts();
@@ -154,11 +148,12 @@ impl AgentEngine {
                     _ => {
                         if let Some(usage) = usage {
                             println!(
-                                "Input: {}, Output: {}, Total: {}",
+                                "↑ {}, ↑ {}, Σ {}",
                                 usage.prompt_tokens.unwrap_or(-1),
                                 usage.completion_tokens.unwrap_or(-1),
                                 usage.total_tokens.unwrap_or(-1)
                             );
+                            println!();
                         }
                         break;
                     }

@@ -122,6 +122,10 @@ impl ToolRouter {
         Ok(self)
     }
 
+    pub fn names(&self) -> Vec<&str> {
+        self.tools.keys().map(String::as_str).collect()
+    }
+
     pub fn declarations(&self) -> Vec<GenaiTool> {
         self.tools.values().map(|tool| tool.declaration()).collect()
     }

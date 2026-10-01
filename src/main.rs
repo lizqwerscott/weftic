@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 
 use anyhow::{Result, anyhow};
+use colored::Colorize;
 
 use tracing_subscriber::EnvFilter;
 
@@ -9,9 +10,9 @@ use weftic::config::load_model_config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new("genai=debug"))
-        .init();
+    // tracing_subscriber::fmt()
+    //     .with_env_filter(EnvFilter::new("genai=debug"))
+    //     .init();
 
     dotenvy::dotenv()?;
 
@@ -31,12 +32,12 @@ async fn main() -> Result<()> {
             io::stdin().read_line(&mut input)?;
             let input = input.trim();
 
-            if input.starts_with("/") {
-                if input == "/exit" {
-                    break;
-                }
-            } else {
-                agent_engine.run_turn(input.to_string()).await?;
+            if input == "/exit" {
+                break;
+            }
+
+            if let Err(err) = agent_engine.run_turn(input.to_string()).await {
+                println!("{}: {}", "Error".red(), err.to_string());
             }
         }
     } else {
