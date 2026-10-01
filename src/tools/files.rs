@@ -51,59 +51,61 @@ impl Tool for ReadTool {
     }
 
     fn call<'a>(&'a self, args: ReadToolArgs) -> super::BoxedFuture<'a, Result<String>> {
-        Box::pin(async move {
-            if args.file_path.is_empty() {
-                return Err(anyhow!("file_path is empty"));
-            }
-
-            let path = Path::new(&args.file_path);
-
-            if !path.is_absolute() {
-                return Err(anyhow!(
-                    "file_path must be an absolute path, got: {}",
-                    path.display()
-                ));
-            }
-
-            if !path.exists() {
-                return Err(anyhow!("{} is not exists", path.display()));
-            }
-
-            if path.is_dir() {
-                return Err(anyhow!(
-                    "Path is a directory, not a file: {}",
-                    path.display()
-                ));
-            }
-
-            let file = File::open(path)?;
-            let reader = BufReader::new(file);
-
-            let offset: usize = usize::try_from(args.offset.unwrap_or(1).max(1))?;
-            let limit: usize = usize::try_from(args.limit.unwrap_or(2000).min(2000))? + offset;
-
-            let mut line_index: usize = 0;
-
-            let mut data: Vec<String> = Vec::new();
-
-            for line in reader.lines() {
-                line_index += 1;
-
-                let line = line?;
-                if line_index < offset {
-                    continue;
-                }
-
-                if line_index >= limit {
-                    break;
-                }
-
-                data.push(format!("{}|{}", line_index, line));
-            }
-
-            Ok(data.join("\n"))
-        })
+        Box::pin(async move { tokio::task::spawn_blocking(move || read_file(args)).await? })
     }
+}
+
+fn read_file(args: ReadToolArgs) -> Result<String> {
+    if args.file_path.is_empty() {
+        return Err(anyhow!("file_path is empty"));
+    }
+
+    let path = Path::new(&args.file_path);
+
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "file_path must be an absolute path, got: {}",
+            path.display()
+        ));
+    }
+
+    if !path.exists() {
+        return Err(anyhow!("{} is not exists", path.display()));
+    }
+
+    if path.is_dir() {
+        return Err(anyhow!(
+            "Path is a directory, not a file: {}",
+            path.display()
+        ));
+    }
+
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let offset: usize = usize::try_from(args.offset.unwrap_or(1).max(1))?;
+    let limit: usize = usize::try_from(args.limit.unwrap_or(2000).min(2000))? + offset;
+
+    let mut line_index: usize = 0;
+
+    let mut data: Vec<String> = Vec::new();
+
+    for line in reader.lines() {
+        line_index += 1;
+
+        let line = line?;
+        if line_index < offset {
+            continue;
+        }
+
+        if line_index >= limit {
+            break;
+        }
+
+        data.push(format!("{}|{}", line_index, line));
+    }
+
+    Ok(data.join("\n"))
 }
 
 // write
@@ -140,34 +142,36 @@ impl Tool for WriteTool {
     }
 
     fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
-        Box::pin(async move {
-            if args.file_path.is_empty() {
-                return Err(anyhow!("file_path is empty"));
-            }
-
-            let path = Path::new(&args.file_path);
-
-            if !path.is_absolute() {
-                return Err(anyhow!(
-                    "file_path must be an absolute path, got: {}",
-                    path.display()
-                ));
-            }
-
-            if path.is_dir() {
-                return Err(anyhow!(
-                    "Path is a directory, not a file: {}",
-                    path.display()
-                ));
-            }
-
-            if let Some(dir) = path.parent() {
-                fs::create_dir_all(dir)?;
-            }
-
-            fs::write(path, args.content)?;
-
-            Ok(String::from("write success."))
-        })
+        Box::pin(async move { tokio::task::spawn_blocking(move || write_file(args)).await? })
     }
+}
+
+fn write_file(args: WriteToolArgs) -> Result<String> {
+    if args.file_path.is_empty() {
+        return Err(anyhow!("file_path is empty"));
+    }
+
+    let path = Path::new(&args.file_path);
+
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "file_path must be an absolute path, got: {}",
+            path.display()
+        ));
+    }
+
+    if path.is_dir() {
+        return Err(anyhow!(
+            "Path is a directory, not a file: {}",
+            path.display()
+        ));
+    }
+
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+
+    fs::write(path, args.content)?;
+
+    Ok(String::from("write success."))
 }
