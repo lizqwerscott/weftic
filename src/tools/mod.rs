@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 use genai::chat::{Tool as GenaiTool, ToolCall, ToolResponse};
 
+use crate::tools::files::{ReadTool, WriteTool};
+
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug)]
@@ -111,6 +113,13 @@ impl ToolRouter {
         Self {
             tools: BTreeMap::new(),
         }
+    }
+
+    pub fn register_buildin_tools(&mut self) -> Result<(), ToolRegisterError> {
+        self.register(ReadTool)?;
+        self.register(WriteTool)?;
+
+        Ok(())
     }
 
     pub fn register<T: Tool>(&mut self, tool: T) -> Result<&mut Self, ToolRegisterError> {

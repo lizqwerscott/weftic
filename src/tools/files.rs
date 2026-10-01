@@ -1,4 +1,8 @@
-use std::{fs::File, io::BufRead, io::BufReader, path::Path};
+use std::{
+    fs::{self, File},
+    io::{BufRead, BufReader},
+    path::Path,
+};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -98,6 +102,72 @@ impl Tool for ReadTool {
             }
 
             Ok(data.join("\n"))
+        })
+    }
+}
+
+// write
+#[derive(Deserialize)]
+pub struct WriteToolArgs {
+    file_path: String,
+    content: String,
+}
+
+pub struct WriteTool;
+
+impl Tool for WriteTool {
+    type Args = WriteToolArgs;
+    const NAME: &'static str = "write";
+    fn descrption(&self) -> &str {
+        "Create or fully replace a UTF-8 text file."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "The absolute path to write."
+            },
+            "content": {
+              "type": "string",
+              "description": "Content to write to the file."
+            }
+          },
+          "required": ["file_path", "content"]
+        })
+    }
+
+    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+        Box::pin(async move {
+            if args.file_path.is_empty() {
+                return Err(anyhow!("file_path is empty"));
+            }
+
+            let path = Path::new(&args.file_path);
+
+            if !path.is_absolute() {
+                return Err(anyhow!(
+                    "file_path must be an absolute path, got: {}",
+                    path.display()
+                ));
+            }
+
+            if path.is_dir() {
+                return Err(anyhow!(
+                    "Path is a directory, not a file: {}",
+                    path.display()
+                ));
+            }
+
+            if let Some(dir) = path.parent() {
+                fs::create_dir_all(dir)?;
+            }
+
+            fs::write(path, args.content)?;
+
+            Ok(String::from("write success."))
         })
     }
 }

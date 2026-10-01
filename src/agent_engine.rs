@@ -8,7 +8,6 @@ use genai::{
 };
 
 use crate::tools::ToolRouter;
-use crate::tools::files::ReadTool;
 use crate::tui::render::StreamRenderer;
 
 pub struct AgentEngine {
@@ -33,7 +32,7 @@ impl AgentEngine {
     }
 
     pub fn register_buildin_tools(&mut self) -> Result<()> {
-        self.tool_router.register(ReadTool)?;
+        self.tool_router.register_buildin_tools()?;
 
         self.chat_request = self
             .chat_request
