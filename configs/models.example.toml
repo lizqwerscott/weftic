@@ -1,6 +1,6 @@
 [providers.deepseek]
 type = "native"
-provide = "deepseek"
+provider = "deepseek"
 name = "Deepseek"
 
 [[providers.deepseek.models]]

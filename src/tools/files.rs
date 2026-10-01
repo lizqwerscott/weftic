@@ -25,7 +25,7 @@ impl Tool for ReadTool {
     type Args = ReadToolArgs;
     const NAME: &'static str = "read";
 
-    fn descrption(&self) -> &str {
+    fn description(&self) -> &str {
         "Read a UTF-8 text file and return line-numbered content."
     }
 
@@ -120,7 +120,7 @@ pub struct WriteTool;
 impl Tool for WriteTool {
     type Args = WriteToolArgs;
     const NAME: &'static str = "write";
-    fn descrption(&self) -> &str {
+    fn description(&self) -> &str {
         "Create or fully replace a UTF-8 text file."
     }
 

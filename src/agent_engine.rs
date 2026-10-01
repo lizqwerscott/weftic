@@ -34,8 +34,8 @@ impl AgentEngine {
         }
     }
 
-    pub fn register_buildin_tools(&mut self) -> Result<()> {
-        self.tool_router.register_buildin_tools()?;
+    pub fn register_builtin_tools(&mut self) -> Result<()> {
+        self.tool_router.register_builtin_tools()?;
 
         self.chat_request = self
             .chat_request

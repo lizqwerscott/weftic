@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
 
     if let Some((client, model)) = model_register.get_client_model() {
         let mut agent_engine = AgentEngine::new(client, model, "你是一个 AI 助手".to_string());
-        agent_engine.register_buildin_tools()?;
+        agent_engine.register_builtin_tools()?;
 
         let (_, mut rl) = build_input()?;
 

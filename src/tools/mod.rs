@@ -15,7 +15,7 @@ pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub enum ToolError {
     UnknownTool { name: String },
     InvalidArgs { tool: String, message: String },
-    Execuation { tool: String, message: String },
+    Execution { tool: String, message: String },
 }
 
 impl ToolError {
@@ -25,8 +25,8 @@ impl ToolError {
             Self::InvalidArgs { tool, message } => {
                 (tool.as_str(), format!("invalid arguments: {message}"))
             }
-            Self::Execuation { tool, message } => {
-                (tool.as_str(), format!("execuation failed: {message}"))
+            Self::Execution { tool, message } => {
+                (tool.as_str(), format!("execution failed: {message}"))
             }
         };
 
@@ -54,10 +54,10 @@ pub trait Tool: Send + Sync + 'static {
 
     const NAME: &'static str;
 
-    fn descrption(&self) -> &str;
+    fn description(&self) -> &str;
 
     fn parameters(&self) -> Value {
-        json!({"type": "object", "properties": {}, "additionProperties": false})
+        json!({"type": "object", "properties": {}, "additionalProperties": false})
     }
 
     fn call<'a>(&'a self, args: Self::Args) -> BoxedFuture<'a, anyhow::Result<String>>;
@@ -76,7 +76,7 @@ impl<T: Tool> DynTool for T {
 
     fn declaration(&self) -> GenaiTool {
         GenaiTool::new(T::NAME)
-            .with_description(self.descrption())
+            .with_description(self.description())
             .with_schema(self.parameters())
     }
 
@@ -89,7 +89,7 @@ impl<T: Tool> DynTool for T {
                 })?;
             match self.call(type_args).await {
                 Ok(res) => Ok(res),
-                Err(e) => Err(ToolError::Execuation {
+                Err(e) => Err(ToolError::Execution {
                     tool: T::NAME.to_string(),
                     message: e.to_string(),
                 }),
@@ -115,7 +115,7 @@ impl ToolRouter {
         }
     }
 
-    pub fn register_buildin_tools(&mut self) -> Result<(), ToolRegisterError> {
+    pub fn register_builtin_tools(&mut self) -> Result<(), ToolRegisterError> {
         self.register(ReadTool)?;
         self.register(WriteTool)?;
 

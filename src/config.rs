@@ -39,7 +39,7 @@ pub struct Model {
     model: String,
     temperature: Option<f64>,
     max_tokens: Option<u32>,
-    reasoning_effot: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,7 +47,7 @@ pub struct Model {
 pub enum ProviderConfig {
     Native {
         name: String,
-        provide: Provider,
+        provider: Provider,
         models: Vec<Model>,
     },
     Openai {
@@ -177,7 +177,7 @@ impl ModelRegister {
             match p {
                 ProviderConfig::Native {
                     name,
-                    provide,
+                    provider,
                     models,
                 } => {
                     println!(
@@ -185,7 +185,7 @@ impl ModelRegister {
                         bullet,
                         name.bright_white().bold(),
                         k,
-                        provide.to_string().bright_white()
+                        provider.to_string().bright_white()
                     );
 
                     print!("    {}: ", "models".bright_black());
