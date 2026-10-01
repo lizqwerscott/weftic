@@ -1,6 +1,6 @@
 use futures::StreamExt;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use genai::{
     Client,
@@ -59,7 +59,9 @@ impl AgentEngine {
             .with_capture_reasoning_content(true)
             .with_capture_content(true);
 
-        for _ in 1..=self.max_iterations {
+        let mut iterations = 0;
+
+        for iteration in 1..=self.max_iterations {
             let mut chat_stream = self
                 .client
                 .exec_chat_stream(&self.model, chat_req.clone(), Some(&chat_options))
@@ -97,6 +99,10 @@ impl AgentEngine {
                 .map(|c| c.tool_calls().into_iter().cloned().collect())
                 .unwrap_or_default();
 
+            let has_text = assistant_content
+                .as_ref()
+                .is_some_and(|c| !c.texts().is_empty());
+
             let mut assistant_msg = match assistant_content.take() {
                 Some(content) => ChatMessage::assistant(content),
                 None => ChatMessage::assistant(MessageContent::from_parts(vec![])),
@@ -104,25 +110,49 @@ impl AgentEngine {
 
             assistant_msg = assistant_msg.with_reasoning_content(captured_reasoning.take());
 
-            chat_req = chat_req.append_message(assistant_msg);
-
             if !tool_calls.is_empty() {
                 let tool_responses = self.tool_router.dispatch_all(&tool_calls).await;
                 self.stream_render
                     .render_tool_calls(&tool_calls, &tool_responses);
 
-                chat_req = chat_req.append_messages(tool_responses);
-            } else {
-                render_stop_reason(stop_reason);
-
-                if let Some(usage) = usage {
-                    render_usage(usage);
-                }
-                break;
+                chat_req = chat_req
+                    .append_message(assistant_msg)
+                    .append_messages(tool_responses);
+                continue;
             }
+
+            render_stop_reason(&stop_reason);
+
+            if !has_text {
+                self.chat_request = chat_req;
+
+                if matches!(
+                    stop_reason,
+                    Some(StopReason::ContentFilter(_)) | Some(StopReason::MaxTokens(_))
+                ) {
+                    return Ok(());
+                }
+
+                return Err(anyhow!("empty assistant response (no text, no tool calls)"));
+            }
+
+            if let Some(usage) = usage {
+                render_usage(usage, iteration);
+            }
+
+            chat_req = chat_req.append_message(assistant_msg);
+            iterations = iteration;
+            break;
         }
 
         self.chat_request = chat_req;
+
+        if iterations == 0 {
+            return Err(anyhow!(
+                "agent did not finish within {} iterations",
+                self.max_iterations
+            ));
+        }
 
         Ok(())
     }

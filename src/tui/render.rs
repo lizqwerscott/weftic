@@ -109,7 +109,7 @@ impl StreamRenderer {
     }
 }
 
-pub fn render_stop_reason(stop_reason: Option<StopReason>) {
+pub fn render_stop_reason(stop_reason: &Option<StopReason>) {
     let Some(reason) = stop_reason else {
         return;
     };
@@ -153,10 +153,14 @@ fn humanize(n: i64) -> String {
     }
 }
 
-pub fn render_usage(usage: Usage) {
+pub fn render_usage(usage: Usage, iterations: usize) {
     let dim = |s: &str| s.bright_black().to_string();
     let num = |n: i64| humanize(n).cyan().to_string();
     let mut segs: Vec<String> = Vec::new();
+
+    if iterations > 1 {
+        segs.push(format!("{} {}", dim("⟳"), format!("{iterations}").cyan()));
+    }
 
     if let Some(prompt) = usage.prompt_tokens {
         let cached = usage
