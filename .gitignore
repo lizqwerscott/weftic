@@ -1,12 +1,15 @@
+# Build output
 /target
 
-# 忽略 .env 文件
+# Environment
 .env
 .env.*
 !.env.example
 
-# 忽略 configs 目录下所有内容
+# Local config (examples are tracked)
 configs/*
-# 但保留 examples 文件
 !configs/config.example.toml
 !configs/models.example.toml
+
+# Agent local state (Command Code)
+/.commandcode/
