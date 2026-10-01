@@ -1,5 +1,5 @@
 use colored::Colorize;
-use genai::chat::{ToolCall, ToolResponse};
+use genai::chat::{StopReason, ToolCall, ToolResponse, Usage};
 
 pub struct StreamRenderer {
     in_think: bool,
@@ -107,4 +107,95 @@ impl StreamRenderer {
         self.content_started = false;
         println!();
     }
+}
+
+pub fn render_stop_reason(stop_reason: Option<StopReason>) {
+    let Some(reason) = stop_reason else {
+        return;
+    };
+
+    match reason {
+        StopReason::Completed(_) | StopReason::ToolCall(_) => {}
+        StopReason::MaxTokens(raw) => {
+            eprintln!(
+                "{} response truncated by max_tokens ({}); increase max_tokens and retry",
+                "⚠".yellow().bold(),
+                raw.bright_black()
+            );
+        }
+        StopReason::ContentFilter(raw) => {
+            eprintln!(
+                "{} response stopped by content filter ({})",
+                "⚠".red().bold(),
+                raw.bright_black()
+            );
+        }
+        StopReason::StopSequence(raw) | StopReason::Other(raw) => {
+            tracing::debug!(reason = %raw, "stream stop reason");
+        }
+    }
+}
+
+fn humanize(n: i64) -> String {
+    let n = n as f64;
+    let (v, unit) = if n >= 1_000_000.0 {
+        (n / 1_000_000.0, "m")
+    } else if n >= 1_000.0 {
+        (n / 1_000.0, "k")
+    } else {
+        (n, "")
+    };
+
+    if v.fract() == 0.0 {
+        format!("{v:.0}{unit}")
+    } else {
+        format!("{v:.1}{unit}")
+    }
+}
+
+pub fn render_usage(usage: Usage) {
+    let dim = |s: &str| s.bright_black().to_string();
+    let num = |n: i64| humanize(n).cyan().to_string();
+    let mut segs: Vec<String> = Vec::new();
+
+    if let Some(prompt) = usage.prompt_tokens {
+        let cached = usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+            .unwrap_or(0);
+        if cached > 0 {
+            segs.push(format!(
+                "{} {} ({} {} + {} {})",
+                dim("↑"),
+                num(prompt as i64),
+                dim("U"),
+                num((prompt - cached) as i64),
+                dim("R"),
+                num(cached as i64),
+            ));
+        } else {
+            segs.push(format!("{} {}", dim("↑"), num(prompt as i64)));
+        }
+    }
+
+    if let Some(out) = usage.completion_tokens {
+        segs.push(format!("{} {}", dim("↓"), num(out as i64)));
+    }
+
+    // reasoning tokens (only some providers)
+    if let Some(reasoning) = usage
+        .completion_tokens_details
+        .as_ref()
+        .and_then(|d| d.reasoning_tokens)
+    {
+        segs.push(format!("{} {}", dim("∴"), num(reasoning as i64)));
+    }
+
+    if segs.is_empty() {
+        return; // provider returned no usage
+    }
+
+    println!("{}", segs.join(&dim(" | ")));
+    println!();
 }

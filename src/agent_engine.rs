@@ -4,11 +4,14 @@ use anyhow::Result;
 
 use genai::{
     Client,
-    chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, StopReason, ToolCall, Usage},
+    chat::{
+        ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, StopReason,
+        ToolCall, Usage,
+    },
 };
 
-use crate::tools::ToolRouter;
-use crate::tui::render::StreamRenderer;
+use crate::tui::render::{StreamRenderer, render_stop_reason};
+use crate::{tools::ToolRouter, tui::render::render_usage};
 
 pub struct AgentEngine {
     client: Client,
@@ -62,10 +65,8 @@ impl AgentEngine {
                 .exec_chat_stream(&self.model, chat_req.clone(), Some(&chat_options))
                 .await?;
 
-            let mut tool_calls: Vec<ToolCall> = [].to_vec();
-            let mut captured_thoughts: Option<Vec<String>> = None;
-            // let mut captured_reasoning: Option<String> = None;
-            // let mut contents: Option<Vec<String>> = None;
+            let mut captured_reasoning: Option<String> = None;
+            let mut assistant_content: Option<MessageContent> = None;
             let mut usage: Option<Usage> = None;
             let mut stop_reason: Option<StopReason> = None;
 
@@ -81,82 +82,43 @@ impl AgentEngine {
                     }
                     ChatStreamEvent::End(end) => {
                         self.stream_render.finish();
-                        // captured_reasoning = end.captured_reasoning_content;
-                        usage = end.captured_usage;
+                        captured_reasoning = end.captured_reasoning_content;
+                        assistant_content = end.captured_content;
                         stop_reason = end.captured_stop_reason;
 
-                        if let Some(content) = end.captured_content {
-                            let parts = content.into_parts();
-                            let mut extracted_tool_calls = Vec::new();
-                            let mut extracted_thoughts = Vec::new();
-                            let mut extracted_content = Vec::new();
-
-                            for part in parts {
-                                match part {
-                                    genai::chat::ContentPart::ToolCall(tc) => {
-                                        extracted_tool_calls.push(tc)
-                                    }
-                                    genai::chat::ContentPart::ThoughtSignature(t) => {
-                                        extracted_thoughts.push(t)
-                                    }
-                                    genai::chat::ContentPart::Text(text) => {
-                                        extracted_content.push(text);
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            if !extracted_tool_calls.is_empty() {
-                                tool_calls = extracted_tool_calls;
-                            }
-
-                            if !extracted_thoughts.is_empty() {
-                                captured_thoughts = Some(extracted_thoughts);
-                            }
-
-                            // if !extracted_content.is_empty() {
-                            //     contents = Some(extracted_content);
-                            // }
-                        }
+                        usage = end.captured_usage;
                     }
                     _ => {}
                 }
             }
 
-            if let Some(stop_reason) = stop_reason {
-                match stop_reason {
-                    StopReason::ToolCall(_) => {
-                        let tool_responses = self.tool_router.dispatch_all(&tool_calls).await;
-                        self.stream_render
-                            .render_tool_calls(&tool_calls, &tool_responses);
+            let tool_calls: Vec<ToolCall> = assistant_content
+                .as_ref()
+                .map(|c| c.tool_calls().into_iter().cloned().collect())
+                .unwrap_or_default();
 
-                        let mut assistant_msg = ChatMessage::from(tool_calls);
-                        if let Some(thoughts) = captured_thoughts {
-                            let mut parts = assistant_msg.content.into_parts();
-                            for thought in thoughts.into_iter().rev() {
-                                parts
-                                    .insert(0, genai::chat::ContentPart::ThoughtSignature(thought));
-                            }
-                            assistant_msg.content = genai::chat::MessageContent::from_parts(parts);
-                        }
+            let mut assistant_msg = match assistant_content.take() {
+                Some(content) => ChatMessage::assistant(content),
+                None => ChatMessage::assistant(MessageContent::from_parts(vec![])),
+            };
 
-                        chat_req = chat_req
-                            .append_message(assistant_msg)
-                            .append_messages(tool_responses);
-                    }
-                    _ => {
-                        if let Some(usage) = usage {
-                            println!(
-                                "↑ {}, ↑ {}, Σ {}",
-                                usage.prompt_tokens.unwrap_or(-1),
-                                usage.completion_tokens.unwrap_or(-1),
-                                usage.total_tokens.unwrap_or(-1)
-                            );
-                            println!();
-                        }
-                        break;
-                    }
+            assistant_msg = assistant_msg.with_reasoning_content(captured_reasoning.take());
+
+            chat_req = chat_req.append_message(assistant_msg);
+
+            if !tool_calls.is_empty() {
+                let tool_responses = self.tool_router.dispatch_all(&tool_calls).await;
+                self.stream_render
+                    .render_tool_calls(&tool_calls, &tool_responses);
+
+                chat_req = chat_req.append_messages(tool_responses);
+            } else {
+                render_stop_reason(stop_reason);
+
+                if let Some(usage) = usage {
+                    render_usage(usage);
                 }
+                break;
             }
         }
 
