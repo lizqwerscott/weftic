@@ -9,12 +9,13 @@ use serde_json::json;
 
 use anyhow::{Result, anyhow};
 
-use super::Tool;
+use crate::tools::MAX_LINE_LENGTH;
+
+use super::{Tool, truncate_line};
 
 // read
 
 const READ_MAX_BYTES: usize = 50 * 1024;
-const READ_MAX_LINE_LENGTH: usize = 2000;
 const READ_MAX_LINES: usize = 2000;
 
 enum ReadStopReason {
@@ -65,17 +66,6 @@ impl Tool for ReadTool {
 
     fn call<'a>(&'a self, args: ReadToolArgs) -> super::BoxedFuture<'a, Result<String>> {
         Box::pin(async move { tokio::task::spawn_blocking(move || read_file(args)).await? })
-    }
-}
-
-fn truncate_line(line: &str, max_chars: usize) -> String {
-    match line.char_indices().nth(max_chars) {
-        Some((idx, _)) => format!(
-            "{} ... (line truncated to {} chars)",
-            &line[..idx],
-            max_chars
-        ),
-        None => line.to_string(),
     }
 }
 
@@ -145,7 +135,7 @@ fn read_file(args: ReadToolArgs) -> Result<String> {
             continue;
         }
 
-        let text = truncate_line(&line, READ_MAX_LINE_LENGTH);
+        let text = truncate_line(&line, MAX_LINE_LENGTH);
         let res_line = format!("{}: {}", line_index, text);
 
         if (data_bytes + res_line.len() + 1) > READ_MAX_BYTES {

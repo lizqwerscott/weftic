@@ -1,4 +1,6 @@
 pub mod files;
+pub mod glob;
+pub mod grep;
 
 use std::{collections::BTreeMap, fmt, pin::Pin, sync::Arc};
 
@@ -7,7 +9,11 @@ use serde_json::{Value, json};
 
 use genai::chat::{Tool as GenaiTool, ToolCall, ToolResponse};
 
-use crate::tools::files::{ReadTool, WriteTool};
+use crate::tools::{
+    files::{ReadTool, WriteTool},
+    glob::GlobTool,
+    grep::GrepTool,
+};
 
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -118,6 +124,8 @@ impl ToolRouter {
     pub fn register_builtin_tools(&mut self) -> Result<(), ToolRegisterError> {
         self.register(ReadTool)?;
         self.register(WriteTool)?;
+        self.register(GlobTool)?;
+        self.register(GrepTool)?;
 
         Ok(())
     }
@@ -157,5 +165,18 @@ impl ToolRouter {
 
     pub async fn dispatch_all(&self, call: &[ToolCall]) -> Vec<ToolResponse> {
         futures::future::join_all(call.iter().map(|call| self.dispatch(call))).await
+    }
+}
+
+const MAX_LINE_LENGTH: usize = 2000;
+
+fn truncate_line(line: &str, max_chars: usize) -> String {
+    match line.char_indices().nth(max_chars) {
+        Some((idx, _)) => format!(
+            "{} ... (line truncated to {} chars)",
+            &line[..idx],
+            max_chars
+        ),
+        None => line.to_string(),
     }
 }
