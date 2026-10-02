@@ -84,7 +84,7 @@ fn read_file(args: ReadToolArgs) -> Result<String> {
     }
 
     if !path.exists() {
-        return Err(anyhow!("{} is not exists", path.display()));
+        return Err(anyhow!("{} does not exist", path.display()));
     }
 
     if path.is_dir() {

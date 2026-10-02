@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        return Err(anyhow!("not find provider and model!"));
+        return Err(anyhow!("no provider and model found!"));
     }
 
     Ok(())

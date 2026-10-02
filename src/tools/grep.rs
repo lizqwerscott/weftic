@@ -177,7 +177,7 @@ fn grep_dir(args: GrepToolArgs) -> Result<String> {
     let path = Path::new(&args.path);
 
     if !path.exists() {
-        return Err(anyhow!("{} is not exists", path.display()));
+        return Err(anyhow!("{} does not exist", path.display()));
     }
 
     let matcher = RegexMatcher::new(&args.pattern)?;

@@ -27,7 +27,7 @@ pub enum ToolError {
 impl ToolError {
     fn to_model_payload(&self) -> String {
         let (tool, message) = match self {
-            Self::UnknownTool { name } => (name.as_str(), format!("unknow tool `{name}`")),
+            Self::UnknownTool { name } => (name.as_str(), format!("unknown tool `{name}`")),
             Self::InvalidArgs { tool, message } => {
                 (tool.as_str(), format!("invalid arguments: {message}"))
             }
