@@ -41,6 +41,11 @@ impl Tool for ReadTool {
         "Read a UTF-8 text file and return line-numbered content."
     }
 
+    fn system_description(&self) -> &str {
+        "Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers.
+  Use offset and limit to continue reading large files."
+    }
+
     fn parameters(&self) -> serde_json::Value {
         json!({
           "type": "object",
@@ -197,8 +202,15 @@ pub struct WriteTool;
 impl Tool for WriteTool {
     type Args = WriteToolArgs;
     const NAME: &'static str = "write";
+
     fn description(&self) -> &str {
         "Create or fully replace a UTF-8 text file."
+    }
+
+    fn system_description(&self) -> &str {
+        "Use the write tool to create files or completely replace file contents. Existing files are overwritten,
+  so read an existing file first (the default fs-observation-policy requires it) and prefer edit for
+  targeted changes."
     }
 
     fn parameters(&self) -> serde_json::Value {

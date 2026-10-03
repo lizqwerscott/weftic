@@ -2,7 +2,7 @@ pub mod files;
 pub mod glob;
 pub mod grep;
 
-use std::{collections::BTreeMap, fmt, pin::Pin, sync::Arc};
+use std::{collections::HashMap, fmt, pin::Pin, sync::Arc};
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -62,6 +62,8 @@ pub trait Tool: Send + Sync + 'static {
 
     fn description(&self) -> &str;
 
+    fn system_description(&self) -> &str;
+
     fn parameters(&self) -> Value {
         json!({"type": "object", "properties": {}, "additionalProperties": false})
     }
@@ -72,6 +74,7 @@ pub trait Tool: Send + Sync + 'static {
 pub trait DynTool: Send + Sync {
     fn name(&self) -> &str;
     fn declaration(&self) -> GenaiTool;
+    fn get_system_description(&self) -> &str;
     fn call_json<'a>(&'a self, args: Value) -> BoxedFuture<'a, Result<String, ToolError>>;
 }
 
@@ -84,6 +87,10 @@ impl<T: Tool> DynTool for T {
         GenaiTool::new(T::NAME)
             .with_description(self.description())
             .with_schema(self.parameters())
+    }
+
+    fn get_system_description(&self) -> &str {
+        self.system_description()
     }
 
     fn call_json<'a>(&'a self, args: Value) -> BoxedFuture<'a, Result<String, ToolError>> {
@@ -105,7 +112,8 @@ impl<T: Tool> DynTool for T {
 }
 
 pub struct ToolRouter {
-    tools: BTreeMap<String, Arc<dyn DynTool>>,
+    index: HashMap<String, usize>,
+    tools: Vec<Arc<dyn DynTool>>,
 }
 
 impl Default for ToolRouter {
@@ -117,7 +125,8 @@ impl Default for ToolRouter {
 impl ToolRouter {
     pub fn new() -> Self {
         Self {
-            tools: BTreeMap::new(),
+            index: HashMap::new(),
+            tools: Vec::new(),
         }
     }
 
@@ -132,25 +141,40 @@ impl ToolRouter {
 
     pub fn register<T: Tool>(&mut self, tool: T) -> Result<&mut Self, ToolRegisterError> {
         let name = T::NAME.to_string();
-        if self.tools.contains_key(&name) {
+        if self.index.contains_key(&name) {
             return Err(ToolRegisterError::Duplicate { name });
         }
-        self.tools.insert(name, Arc::new(tool));
+        self.tools.push(Arc::new(tool));
+        self.index.insert(name, self.tools.len() - 1);
         Ok(self)
     }
 
     pub fn names(&self) -> Vec<&str> {
-        self.tools.keys().map(String::as_str).collect()
+        self.tools.iter().map(|tool| tool.name()).collect()
     }
 
     pub fn declarations(&self) -> Vec<GenaiTool> {
-        self.tools.values().map(|tool| tool.declaration()).collect()
+        self.tools.iter().map(|tool| tool.declaration()).collect()
+    }
+
+    pub fn get_tool_system_descriptions(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .map(|tool| tool.get_system_description().to_string())
+            .collect()
+    }
+
+    fn get(&self, name: &str) -> Option<&dyn DynTool> {
+        self.index
+            .get(name)
+            .and_then(|&i| self.tools.get(i))
+            .map(Arc::as_ref)
     }
 
     pub async fn dispatch(&self, call: &ToolCall) -> ToolResponse {
         ToolResponse::from_tool_call(
             call,
-            match self.tools.get(&call.fn_name) {
+            match self.get(&call.fn_name) {
                 Some(tool) => match tool.call_json(call.fn_arguments.clone()).await {
                     Ok(res) => res,
                     Err(e) => e.to_model_payload(),

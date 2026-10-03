@@ -106,6 +106,11 @@ impl Tool for GrepTool {
         "Search file contents with a ripgrep regex and return grouped matches."
     }
 
+    fn system_description(&self) -> &str {
+        "Use the grep tool — not shell grep or rg — to search file contents. Use read on a matched file when you
+  need surrounding context."
+    }
+
     fn parameters(&self) -> serde_json::Value {
         json!({
           "type": "object",

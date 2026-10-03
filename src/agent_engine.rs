@@ -2,6 +2,8 @@ use futures::StreamExt;
 
 use anyhow::{Result, anyhow};
 
+use crate::{config::Config, system_prompt::SystemPrompt};
+
 use genai::{
     Client,
     chat::{
@@ -20,29 +22,42 @@ pub struct AgentEngine {
     tool_router: ToolRouter,
     max_iterations: usize,
     stream_render: StreamRenderer,
+    system_prompt: SystemPrompt,
 }
 
 impl AgentEngine {
-    pub fn new(client: Client, model: String, system_prompt: String) -> Self {
-        AgentEngine {
-            client: client,
-            model: model,
-            chat_request: ChatRequest::default().with_system(system_prompt),
-            tool_router: ToolRouter::new(),
+    pub fn new(client: Client, model: String, config: &Config) -> Result<Self> {
+        let mut tool_router = ToolRouter::new();
+
+        tool_router.register_builtin_tools()?;
+
+        let system_prompt = SystemPrompt::build(
+            &config.system_prompt,
+            &tool_router.get_tool_system_descriptions(),
+        )?;
+
+        Ok(AgentEngine {
+            client,
+            model,
+            chat_request: ChatRequest::default(),
             max_iterations: 100,
+            tool_router,
             stream_render: StreamRenderer::new(),
-        }
+            system_prompt,
+        })
     }
 
-    pub fn register_builtin_tools(&mut self) -> Result<()> {
-        self.tool_router.register_builtin_tools()?;
-
+    pub fn init(&mut self) -> Result<()> {
         self.chat_request = self
             .chat_request
             .clone()
             .with_tools(self.tool_router.declarations());
 
         println!("registered tools: {:?}", self.tool_router.names());
+        let Some(system_prompt) = self.system_prompt.render_system_prompt("agent") else {
+            return Err(anyhow!("agent prompt not found"));
+        };
+        self.chat_request = self.chat_request.clone().with_system(system_prompt);
 
         Ok(())
     }

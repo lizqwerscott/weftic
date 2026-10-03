@@ -5,7 +5,7 @@ use colored::Colorize;
 use tracing_subscriber::EnvFilter;
 
 use weftic::agent_engine::AgentEngine;
-use weftic::config::load_model_config;
+use weftic::config::Config;
 use weftic::tui::input::build_input;
 
 #[tokio::main]
@@ -16,14 +16,14 @@ async fn main() -> Result<()> {
 
     dotenvy::dotenv()?;
 
-    println!("Load Provide config...");
+    println!("Load config...");
 
-    let model_register = load_model_config("./configs/models.toml")?;
-    model_register.print_info();
+    let config = Config::load()?;
+    config.model_register.print_info();
 
-    if let Some((client, model)) = model_register.get_client_model() {
-        let mut agent_engine = AgentEngine::new(client, model, "你是一个 AI 助手".to_string());
-        agent_engine.register_builtin_tools()?;
+    if let Some((client, model)) = config.model_register.get_client_model() {
+        let mut agent_engine = AgentEngine::new(client, model, &config)?;
+        agent_engine.init()?;
 
         let (_, mut rl) = build_input()?;
 

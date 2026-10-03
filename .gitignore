@@ -11,5 +11,9 @@ configs/*
 !configs/config.example.toml
 !configs/models.example.toml
 
+# Local characters (only the default is tracked)
+characters/*
+!characters/default.md
+
 # Agent local state (Command Code)
 /.commandcode/
