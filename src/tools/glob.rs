@@ -1,4 +1,8 @@
-use std::{path::Path, time::SystemTime};
+use std::{
+    collections::HashMap,
+    path::{Component, Path, PathBuf},
+    time::SystemTime,
+};
 
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use serde::Deserialize;
@@ -59,6 +63,45 @@ impl Tool for GlobTool {
     }
 }
 
+fn top_level_segment(path: &Path, root: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let first = rel
+        .components()
+        .find(|c| matches!(c, Component::Normal(_)))?;
+    Some(first.as_os_str().to_string_lossy().into_owned())
+}
+
+fn sample_across_buckets(buckets: &[Vec<usize>], max: usize) -> (Vec<usize>, usize, usize) {
+    let mut cursors = vec![0usize; buckets.len()];
+    let mut taken = 0usize;
+
+    while taken < max {
+        let mut progressed = false;
+        for (i, bucket) in buckets.iter().enumerate() {
+            if taken >= max {
+                break;
+            }
+            if cursors[i] < bucket.len() {
+                cursors[i] += 1;
+                taken += 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    let picked: Vec<usize> = buckets
+        .iter()
+        .enumerate()
+        .flat_map(|(i, b)| b[..cursors[i]].iter().copied())
+        .collect();
+
+    let shown = cursors.iter().filter(|&&c| c > 0).count();
+    (picked, shown, buckets.len())
+}
+
 fn glob_dir(args: GlobToolArgs) -> Result<String> {
     if args.path.is_empty() {
         return Err(anyhow!("path is empty"));
@@ -90,7 +133,7 @@ fn glob_dir(args: GlobToolArgs) -> Result<String> {
         .overrides(override_matcher)
         .build();
 
-    let mut res: Vec<(String, SystemTime)> = Vec::new();
+    let mut res: Vec<(PathBuf, SystemTime)> = Vec::new();
 
     for result in walker {
         let Ok(entry) = result else {
@@ -105,18 +148,17 @@ fn glob_dir(args: GlobToolArgs) -> Result<String> {
             continue;
         };
 
-        let path = entry.into_path();
+        let current_path = entry.into_path();
 
-        if !path.is_dir()
-            && let Some(text) = path.to_str()
-        {
-            res.push((text.to_string(), mtime));
+        if !current_path.is_dir() {
+            res.push((current_path, mtime));
         }
     }
-    Ok(format_paths(res))
+
+    Ok(format_paths(res, path))
 }
 
-fn format_paths(mut res: Vec<(String, SystemTime)>) -> String {
+fn format_paths(mut res: Vec<(PathBuf, SystemTime)>, root: &Path) -> String {
     res.sort_by_key(|a| std::cmp::Reverse(a.1));
 
     if res.is_empty() {
@@ -124,15 +166,54 @@ fn format_paths(mut res: Vec<(String, SystemTime)>) -> String {
     }
 
     let seen = res.len();
-    let shown = seen.min(GLOB_MAX_RESULTS);
-    let mut lines: Vec<String> = res[..shown].iter().map(|(path, _)| path.clone()).collect();
+    if seen <= GLOB_MAX_RESULTS {
+        return res
+            .iter()
+            .map(|(path, _)| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
 
-    if seen > shown {
-        lines.push(String::new());
+    let mut buckets: Vec<Vec<usize>> = Vec::new();
+    let mut bucket_index: HashMap<String, usize> = HashMap::new();
+
+    for (i, (path, _)) in res.iter().enumerate() {
+        let Some(key) = top_level_segment(path, root) else {
+            continue;
+        };
+        let bucket = *bucket_index.entry(key).or_insert_with(|| {
+            buckets.push(Vec::new());
+            buckets.len() - 1
+        });
+        buckets[bucket].push(i);
+    }
+
+    let (picked, shown, total) = sample_across_buckets(&buckets, GLOB_MAX_RESULTS);
+
+    let mut lines: Vec<String> = picked
+        .iter()
+        .map(|&i| res[i].0.to_string_lossy().into_owned())
+        .collect();
+
+    lines.push(String::new());
+    if total == seen {
         lines.push(format!(
             "(Showing {} of {} paths; narrow pattern or path to see more.)",
-            shown, seen
+            picked.len(),
+            seen
         ));
+    } else {
+        let mut footer = format!(
+            "Showing {} of {} paths, sampled across {} of the {} top-level entries this pattern matched instead of taken in modification-time order.",
+            picked.len(),
+            seen,
+            shown,
+            total
+        );
+        if shown < total {
+            footer.push_str(" Narrow path to inspect a specific subtree.");
+        }
+        lines.push(format!("({footer})"));
     }
 
     lines.join("\n")
@@ -144,25 +225,24 @@ mod tests {
 
     use super::*;
 
-    fn entry(path: &str, secs: u64) -> (String, SystemTime) {
+    fn entry(path: &str, secs: u64) -> (PathBuf, SystemTime) {
         (
-            path.to_string(),
+            PathBuf::from(path),
             SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
         )
     }
 
     #[test]
     fn empty_reports_none() {
-        assert_eq!(format_paths(Vec::new()), "No files found");
+        assert_eq!(format_paths(Vec::new(), Path::new(".")), "No files found");
     }
 
     #[test]
     fn sorts_newest_first_without_footer_under_cap() {
-        let out = format_paths(vec![
-            entry("old.rs", 1),
-            entry("new.rs", 9),
-            entry("mid.rs", 5),
-        ]);
+        let out = format_paths(
+            vec![entry("old.rs", 1), entry("new.rs", 9), entry("mid.rs", 5)],
+            Path::new("."),
+        );
         assert_eq!(out, "new.rs\nmid.rs\nold.rs");
     }
 
@@ -171,22 +251,55 @@ mod tests {
         let res = (0..GLOB_MAX_RESULTS as u64)
             .map(|i| entry(&format!("f{i}.rs"), i))
             .collect();
-        let out = format_paths(res);
+        let out = format_paths(res, Path::new("."));
         assert_eq!(out.lines().count(), GLOB_MAX_RESULTS);
         assert!(!out.contains("Showing"));
     }
 
     #[test]
-    fn over_cap_truncates_and_reports_footer() {
+    fn over_cap_without_subtrees_keeps_plain_footer() {
         let total = GLOB_MAX_RESULTS + 10;
         let res = (0..total as u64)
             .map(|i| entry(&format!("f{i}.rs"), i))
             .collect();
-        let out = format_paths(res);
+        let out = format_paths(res, Path::new("."));
         assert_eq!(out.lines().count(), GLOB_MAX_RESULTS + 2);
         assert!(out.ends_with(&format!(
             "(Showing {} of {} paths; narrow pattern or path to see more.)",
             GLOB_MAX_RESULTS, total
         )));
+    }
+
+    #[test]
+    fn over_cap_samples_across_top_level_entries() {
+        let mut res = Vec::new();
+        for (dir, base) in [("a", 200u64), ("b", 100), ("c", 0)] {
+            for i in 0..60u64 {
+                res.push(entry(&format!("src/{dir}/f{i}.rs"), base + i));
+            }
+        }
+
+        let out = format_paths(res, Path::new("src"));
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert_eq!(lines.len(), GLOB_MAX_RESULTS + 2);
+        assert_eq!(lines[0], "src/a/f59.rs");
+        assert_eq!(lines.iter().filter(|l| l.starts_with("src/a/")).count(), 34);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("src/b/")).count(), 33);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("src/c/")).count(), 33);
+        assert!(out.contains("sampled across 3 of the 3 top-level entries"));
+    }
+
+    #[test]
+    fn narrow_hint_when_some_entries_are_not_reached() {
+        let mut res = Vec::new();
+        for d in 0..150u64 {
+            res.push(entry(&format!("src/d{d}/f0.rs"), d * 2));
+            res.push(entry(&format!("src/d{d}/f1.rs"), d * 2 + 1));
+        }
+
+        let out = format_paths(res, Path::new("src"));
+        assert!(out.contains("sampled across 100 of the 150 top-level entries"));
+        assert!(out.contains("Narrow path to inspect a specific subtree."));
     }
 }
