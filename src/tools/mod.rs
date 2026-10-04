@@ -1,3 +1,4 @@
+pub mod bash;
 pub mod files;
 pub mod glob;
 pub mod grep;
@@ -10,6 +11,7 @@ use serde_json::{Value, json};
 use genai::chat::{Tool as GenaiTool, ToolCall, ToolResponse};
 
 use crate::tools::{
+    bash::BashTool,
     files::{EditTool, ReadTool, WriteTool},
     glob::GlobTool,
     grep::GrepTool,
@@ -136,6 +138,7 @@ impl ToolRouter {
         self.register(EditTool)?;
         self.register(GlobTool)?;
         self.register(GrepTool)?;
+        self.register(BashTool)?;
 
         Ok(())
     }
