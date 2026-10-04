@@ -32,9 +32,8 @@ impl Tool for GlobTool {
     fn system_description(&self) -> &str {
         "Use the glob tool — not shell find — to discover files by path pattern. A pattern with no \"/\" matches
   basenames at any depth, so \"*\" matches every file in the tree rather than its top level. Results are files
-   only, never directories, and include hidden and ignored files: a result that fits comes back in
-  modification-time order, while a larger one is sampled across top-level entries, so it spans the tree
-  instead of one subtree."
+   only, never directories, and include hidden and ignored files: results come back in modification-time
+  order, newest first, and at most 100 paths are returned, with a footer reporting how many were omitted."
     }
 
     fn parameters(&self) -> serde_json::Value {

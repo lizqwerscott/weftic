@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use genai::chat::{Tool as GenaiTool, ToolCall, ToolResponse};
 
 use crate::tools::{
-    files::{ReadTool, WriteTool},
+    files::{EditTool, ReadTool, WriteTool},
     glob::GlobTool,
     grep::GrepTool,
 };
@@ -133,6 +133,7 @@ impl ToolRouter {
     pub fn register_builtin_tools(&mut self) -> Result<(), ToolRegisterError> {
         self.register(ReadTool)?;
         self.register(WriteTool)?;
+        self.register(EditTool)?;
         self.register(GlobTool)?;
         self.register(GrepTool)?;
 

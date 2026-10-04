@@ -209,8 +209,7 @@ impl Tool for WriteTool {
 
     fn system_description(&self) -> &str {
         "Use the write tool to create files or completely replace file contents. Existing files are overwritten,
-  so read an existing file first (the default fs-observation-policy requires it) and prefer edit for
-  targeted changes."
+  so read an existing file first and prefer edit for targeted changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -269,6 +268,126 @@ fn write_file(args: WriteToolArgs) -> Result<String> {
     Ok(output)
 }
 
+// edit
+#[derive(Deserialize)]
+pub struct EditToolArgs {
+    file_path: String,
+    old_string: String,
+    new_string: String,
+    replace_all: Option<bool>,
+}
+
+pub struct EditTool;
+
+impl Tool for EditTool {
+    type Args = EditToolArgs;
+    const NAME: &'static str = "edit";
+
+    fn description(&self) -> &str {
+        "Edit an existing UTF-8 text file by replacing literal text."
+    }
+
+    fn system_description(&self) -> &str {
+        "Read a file before editing it, unless you just created or edited it in this session."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Path to edit, resolved by the filesystem backend. Provide `file_path` before `old_string` and `new_string` in the arguments."
+            },
+            "old_string": {
+              "type": "string",
+              "description": "Literal text to replace."
+            },
+            "new_string": {
+              "type": "string",
+              "description": "Literal replacement text. Use an empty string to delete the match."
+            },
+            "replace_all": {
+              "type": "boolean",
+              "description": "Replace all matches. Defaults to false; when false, old_string must appear exactly once."
+            }
+          },
+          "required": [
+            "file_path",
+            "old_string",
+            "new_string"
+          ]
+        })
+    }
+
+    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+        Box::pin(async move { tokio::task::spawn_blocking(move || edit_file(args)).await? })
+    }
+}
+
+fn edit_file(args: EditToolArgs) -> Result<String> {
+    if args.file_path.is_empty() {
+        return Err(anyhow!("file_path is empty"));
+    }
+
+    let path = Path::new(&args.file_path);
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "file_path must be an absolute path, got: {}",
+            path.display()
+        ));
+    }
+
+    if !path.exists() {
+        return Err(anyhow!("{} does not exist", path.display()));
+    }
+
+    if path.is_dir() {
+        return Err(anyhow!(
+            "Path is a directory, not a file: {}",
+            path.display()
+        ));
+    }
+
+    if args.old_string.is_empty() {
+        return Err(anyhow!("old_string is empty"));
+    }
+
+    let content = fs::read_to_string(path)?;
+    let count = content.matches(&args.old_string).count();
+
+    if count == 0 {
+        return Err(anyhow!("old_string not found"));
+    }
+
+    let replace_all = args.replace_all.unwrap_or(false);
+
+    let new_content = if replace_all {
+        content.replace(&args.old_string, &args.new_string)
+    } else {
+        if count > 1 {
+            return Err(anyhow!(
+                "old_string matched {} times in {}",
+                count,
+                path.display()
+            ));
+        }
+        content.replacen(&args.old_string, &args.new_string, 1)
+    };
+
+    fs::write(path, new_content)?;
+    let out = if replace_all {
+        format!(
+            "The file {} has been updated. All occurrences were successfully replaced.",
+            path.display()
+        )
+    } else {
+        format!("The file {} has been updated successfully.", path.display())
+    };
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -290,6 +409,20 @@ mod tests {
             file_path: path.to_string_lossy().into_owned(),
             offset,
             limit,
+        })
+    }
+
+    fn edit(
+        path: &Path,
+        old_string: &str,
+        new_string: &str,
+        replace_all: Option<bool>,
+    ) -> Result<String> {
+        edit_file(EditToolArgs {
+            file_path: path.to_string_lossy().into_owned(),
+            old_string: old_string.to_string(),
+            new_string: new_string.to_string(),
+            replace_all,
         })
     }
 
@@ -449,5 +582,99 @@ mod tests {
         let err = read(&path, None, Some(2001)).unwrap_err().to_string();
         assert_eq!(err, "limit must be between 1 and 2000");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn edit_replaces_single_match() {
+        let path = write_temp("edit-single", "alpha\nbeta\ngamma");
+        let out = edit(&path, "beta", "BETA", None).unwrap();
+        assert_eq!(
+            out,
+            format!("The file {} has been updated successfully.", path.display())
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nBETA\ngamma");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn edit_deletes_match_with_empty_new_string() {
+        let path = write_temp("edit-delete", "keep\ndrop\nkeep");
+        edit(&path, "drop\n", "", None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep\nkeep");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn edit_replace_all_replaces_every_occurrence() {
+        let path = write_temp("edit-all", "x x x");
+        let out = edit(&path, "x", "y", Some(true)).unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "The file {} has been updated. All occurrences were successfully replaced.",
+                path.display()
+            )
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "y y y");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn edit_rejects_ambiguous_match_without_replace_all() {
+        let path = write_temp("edit-ambiguous", "x x");
+        let err = edit(&path, "x", "y", None).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!("old_string matched 2 times in {}", path.display())
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "x x");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn edit_rejects_missing_match() {
+        let path = write_temp("edit-missing", "hello");
+        let err = edit(&path, "absent", "x", None).unwrap_err().to_string();
+        assert_eq!(err, "old_string not found");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn edit_rejects_empty_old_string() {
+        let path = write_temp("edit-empty-old", "hello");
+        let err = edit(&path, "", "x", None).unwrap_err().to_string();
+        assert!(err.contains("empty"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn edit_rejects_empty_file_path() {
+        let err = edit(Path::new(""), "a", "b", None).unwrap_err().to_string();
+        assert_eq!(err, "file_path is empty");
+    }
+
+    #[test]
+    fn edit_rejects_relative_path() {
+        let err = edit(Path::new("relative.txt"), "a", "b", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("absolute"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn edit_rejects_directory() {
+        let err = edit(&std::env::temp_dir(), "a", "b", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("directory"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn edit_rejects_missing_file() {
+        let path = temp_path("edit-does-not-exist");
+        let _ = fs::remove_file(&path);
+        let err = edit(&path, "a", "b", None).unwrap_err().to_string();
+        assert!(err.contains("does not exist"), "unexpected error: {err}");
     }
 }
