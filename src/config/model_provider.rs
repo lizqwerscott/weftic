@@ -12,6 +12,7 @@ use genai::Client;
 use genai::ModelIden;
 use genai::ServiceTarget;
 use genai::adapter::AdapterKind;
+use genai::chat::{ChatOptions, ReasoningEffort};
 use genai::resolver::AuthData;
 use genai::resolver::Endpoint;
 use genai::resolver::ServiceTargetResolver;
@@ -40,6 +41,12 @@ pub struct Model {
     temperature: Option<f64>,
     max_tokens: Option<u32>,
     reasoning_effort: Option<String>,
+}
+
+pub struct ResolvedModel {
+    pub client: Client,
+    pub model_id: String,
+    pub options: ChatOptions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,17 +147,46 @@ pub struct ModelRegister {
 }
 
 impl ModelRegister {
-    pub fn get_client_model(&self) -> Option<(Client, String)> {
-        let parts: Vec<&str> = self.route.main.split('/').collect();
-        let provider_name = parts.first()?;
-        let model = parts.get(1)?;
+    pub fn resolve(&self) -> Result<ResolvedModel> {
+        let (provider_name, model_name) = self.route.main.split_once('/').with_context(|| {
+            format!(
+                "malformed route.main `{}` (expected `provider/model`)",
+                self.route.main
+            )
+        })?;
 
-        let provider = self.providers.get(*provider_name)?;
-        let model = provider.find_model(model)?;
+        let provider = self
+            .providers
+            .get(provider_name)
+            .with_context(|| format!("unknown provider `{provider_name}` in route.main"))?;
 
-        let client = provider.build_client().ok()?;
+        let model = provider.find_model(model_name).with_context(|| {
+            format!("unknown model `{model_name}` in provider `{provider_name}`")
+        })?;
 
-        Some((client, model.model.clone()))
+        let client = provider.build_client()?;
+
+        let mut options = ChatOptions::default();
+
+        if let Some(temperature) = model.temperature {
+            options = options.with_temperature(temperature);
+        }
+
+        if let Some(max_tokens) = model.max_tokens {
+            options = options.with_max_tokens(max_tokens);
+        }
+
+        if let Some(effort) = model.reasoning_effort.as_deref() {
+            let effort = ReasoningEffort::from_keyword(effort)
+                .with_context(|| format!("unknown reasoning_effort `{effort}`"))?;
+            options = options.with_reasoning_effort(effort);
+        }
+
+        Ok(ResolvedModel {
+            client,
+            model_id: model.model.clone(),
+            options,
+        })
     }
 
     pub fn print_info(&self) {

@@ -2778,6 +2778,7 @@ dependencies = [
  "grep",
  "ignore",
  "minijinja",
+ "percent-encoding",
  "rustyline",
  "serde",
  "serde_json",

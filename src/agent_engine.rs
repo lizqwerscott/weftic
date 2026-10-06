@@ -1,109 +1,163 @@
+use std::fmt;
+use std::sync::Arc;
+
 use futures::StreamExt;
 
-use anyhow::{Result, anyhow};
-
-use crate::{config::Config, system_prompt::SystemPrompt};
-
-use genai::{
-    Client,
-    chat::{
-        ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, StopReason,
-        ToolCall, Usage,
+use crate::{
+    config::{Config, model_provider::ResolvedModel},
+    output::OutputSink,
+    session::{
+        Session,
+        history::{SessionTurn, TurnError, TurnStatus},
     },
+    system_prompt::SystemPromptManager,
 };
 
-use crate::tui::render::{StreamRenderer, render_stop_reason};
-use crate::{tools::ToolRouter, tui::render::render_usage};
+use genai::chat::{
+    ChatMessage, ChatRequest, ChatStreamEvent, MessageContent, StopReason, ToolCall, Usage,
+};
+
+use crate::tools::ToolRouter;
+
+#[derive(Default)]
+struct TurnMeta {
+    stop_reason: Option<StopReason>,
+    usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TurnStartError {
+    Render(String),
+}
+
+impl fmt::Display for TurnStartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TurnStartError::Render(message) => write!(f, "system prompt render failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for TurnStartError {}
 
 pub struct AgentEngine {
-    client: Client,
-    model: String,
-    chat_request: ChatRequest,
+    model: ResolvedModel,
     tool_router: ToolRouter,
     max_iterations: usize,
-    stream_render: StreamRenderer,
-    system_prompt: SystemPrompt,
+    system_prompt_manager: SystemPromptManager,
 }
 
 impl AgentEngine {
-    pub fn new(client: Client, model: String, config: &Config) -> Result<Self> {
+    pub fn new(model: ResolvedModel, config: &Config) -> anyhow::Result<Self> {
         let mut tool_router = ToolRouter::new();
 
         tool_router.register_builtin_tools()?;
 
-        let system_prompt = SystemPrompt::build(
-            &config.system_prompt,
-            &tool_router.get_tool_system_descriptions(),
-        )?;
+        let templates = config.channel_templates()?.into_values();
+
+        let system_prompt_manager = SystemPromptManager::new(&config.system_prompt, templates)?;
 
         Ok(AgentEngine {
-            client,
             model,
-            chat_request: ChatRequest::default(),
             max_iterations: 100,
             tool_router,
-            stream_render: StreamRenderer::new(),
-            system_prompt,
+            system_prompt_manager,
         })
     }
 
-    pub fn init(&mut self) -> Result<()> {
-        self.chat_request = self
-            .chat_request
-            .clone()
-            .with_tools(self.tool_router.declarations());
-
+    pub fn init(&self) -> anyhow::Result<()> {
         println!("registered tools: {:?}", self.tool_router.names());
-        let Some(system_prompt) = self.system_prompt.render_system_prompt("agent") else {
-            return Err(anyhow!("agent prompt not found"));
-        };
-        self.chat_request = self.chat_request.clone().with_system(system_prompt);
-
         Ok(())
     }
 
-    pub async fn run_turn(&mut self, input: String) -> Result<()> {
-        let mut chat_req = self
-            .chat_request
-            .clone()
-            .append_message(ChatMessage::user(input));
+    pub async fn run_turn(
+        &self,
+        session: &Session,
+        input: ChatMessage,
+        sink: &Arc<dyn OutputSink>,
+    ) -> Result<SessionTurn, TurnStartError> {
+        let mut steps = ChatRequest::default().append_message(input);
 
-        let chat_options = ChatOptions::default()
+        let system = self
+            .system_prompt_manager
+            .render(
+                session.get_template(),
+                &self.tool_router.get_tool_system_descriptions(),
+            )
+            .map_err(|e| TurnStartError::Render(format!("{e:#}")))?;
+
+        let history = session.get_history();
+        let mut meta = TurnMeta::default();
+
+        let error = self
+            .drive(system, &history, &mut steps, sink, &mut meta)
+            .await
+            .err();
+
+        let status = match error {
+            Some(source) => TurnStatus::Failed(source),
+            None => TurnStatus::Complete,
+        };
+
+        Ok(SessionTurn::new(
+            &steps,
+            status,
+            meta.stop_reason,
+            meta.usage,
+        ))
+    }
+
+    async fn drive(
+        &self,
+        system: String,
+        history: &ChatRequest,
+        steps: &mut ChatRequest,
+        sink: &Arc<dyn OutputSink>,
+        meta: &mut TurnMeta,
+    ) -> Result<(), TurnError> {
+        let chat_req = ChatRequest::from_system(system.clone())
+            .with_tools(self.tool_router.declarations())
+            .append_messages(history.messages.clone());
+
+        let chat_options = self
+            .model
+            .options
+            .clone()
             .with_capture_tool_calls(true)
             .with_capture_usage(true)
             .with_capture_reasoning_content(true)
             .with_capture_content(true);
 
-        let mut iterations = 0;
-
         for iteration in 1..=self.max_iterations {
+            let chat_req = chat_req.clone().append_messages(steps.messages.clone());
+
             let mut chat_stream = self
+                .model
                 .client
-                .exec_chat_stream(&self.model, chat_req.clone(), Some(&chat_options))
-                .await?;
+                .exec_chat_stream(self.model.model_id.as_str(), chat_req, Some(&chat_options))
+                .await
+                .map_err(|e| TurnError::Request(format!("{e:#}")))?;
 
             let mut captured_reasoning: Option<String> = None;
             let mut assistant_content: Option<MessageContent> = None;
-            let mut usage: Option<Usage> = None;
-            let mut stop_reason: Option<StopReason> = None;
 
             while let Some(result) = chat_stream.stream.next().await {
-                match result? {
+                match result.map_err(|e| TurnError::Stream(format!("{e:#}")))? {
                     ChatStreamEvent::Start => {}
                     ChatStreamEvent::Chunk(chunk) => {
-                        self.stream_render.render_content(&chunk.content);
+                        sink.on_content(&chunk.content);
                     }
 
                     ChatStreamEvent::ReasoningChunk(chunk) => {
-                        self.stream_render.render_think(&chunk.content);
+                        sink.on_reasoning(&chunk.content);
                     }
                     ChatStreamEvent::End(end) => {
-                        self.stream_render.finish();
+                        sink.finish();
                         captured_reasoning = end.captured_reasoning_content;
                         assistant_content = end.captured_content;
-                        stop_reason = end.captured_stop_reason;
 
-                        usage = end.captured_usage;
+                        meta.stop_reason = end.captured_stop_reason;
+                        meta.usage = end.captured_usage;
                     }
                     _ => {}
                 }
@@ -127,48 +181,55 @@ impl AgentEngine {
 
             if !tool_calls.is_empty() {
                 let tool_responses = self.tool_router.dispatch_all(&tool_calls).await;
-                self.stream_render
-                    .render_tool_calls(&tool_calls, &tool_responses);
+                sink.on_tool_calls(&tool_calls, &tool_responses);
 
-                chat_req = chat_req
+                let current = std::mem::take(steps);
+                *steps = current
                     .append_message(assistant_msg)
                     .append_messages(tool_responses);
+
                 continue;
             }
 
-            render_stop_reason(&stop_reason);
+            sink.on_stop_reason(&meta.stop_reason);
 
             if !has_text {
-                self.chat_request = chat_req;
-
                 if matches!(
-                    stop_reason,
+                    meta.stop_reason,
                     Some(StopReason::ContentFilter(_)) | Some(StopReason::MaxTokens(_))
                 ) {
                     return Ok(());
                 }
 
-                return Err(anyhow!("empty assistant response (no text, no tool calls)"));
+                return Err(TurnError::EmptyResponse);
             }
 
-            if let Some(usage) = usage {
-                render_usage(usage, iteration);
+            if let Some(usage) = &meta.usage {
+                sink.on_usage(usage, iteration);
             }
 
-            chat_req = chat_req.append_message(assistant_msg);
-            iterations = iteration;
-            break;
+            let current = std::mem::take(steps);
+            *steps = current.append_message(assistant_msg);
+
+            return Ok(());
         }
 
-        self.chat_request = chat_req;
+        Err(TurnError::MaxIterations {
+            limit: self.max_iterations,
+        })
+    }
+}
 
-        if iterations == 0 {
-            return Err(anyhow!(
-                "agent did not finish within {} iterations",
-                self.max_iterations
-            ));
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        Ok(())
+    #[test]
+    fn render_error_renders_its_message() {
+        let error = TurnStartError::Render("template `cli` not found".to_string());
+        assert_eq!(
+            error.to_string(),
+            "system prompt render failed: template `cli` not found"
+        );
     }
 }

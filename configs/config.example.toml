@@ -1,2 +1,6 @@
+
+[channels.cli]
+template = "agent"
+
 [system_prompt]
 character_path = "./characters/default.md"

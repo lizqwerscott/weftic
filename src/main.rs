@@ -1,12 +1,12 @@
-use rustyline::error::ReadlineError;
+use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
-use colored::Colorize;
-use tracing_subscriber::EnvFilter;
+use anyhow::Result;
 
 use weftic::agent_engine::AgentEngine;
+use weftic::channel::cli::CliChannel;
 use weftic::config::Config;
-use weftic::tui::input::build_input;
+use weftic::session::manager::SessionManager;
+use weftic::session::resolver::SessionResolver;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,36 +21,16 @@ async fn main() -> Result<()> {
     let config = Config::load()?;
     config.model_register.print_info();
 
-    if let Some((client, model)) = config.model_register.get_client_model() {
-        let mut agent_engine = AgentEngine::new(client, model, &config)?;
-        agent_engine.init()?;
+    let model = config.model_register.resolve()?;
 
-        let (_, mut rl) = build_input()?;
+    let engine = Arc::new(AgentEngine::new(model, &config)?);
+    engine.init()?;
 
-        loop {
-            let readline = rl.readline("> ");
-            match readline {
-                Ok(line) => {
-                    if line == "/exit" {
-                        break;
-                    }
+    let workspace_root = std::env::current_dir()?;
 
-                    if let Err(err) = agent_engine.run_turn(line.to_string()).await {
-                        println!("{}: {}", "Error".red(), err.to_string());
-                    }
-                }
-                Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
-                    println!("Exit");
-                    break;
-                }
-                Err(err) => {
-                    println!("Read error: {}", err.to_string());
-                }
-            }
-        }
-    } else {
-        return Err(anyhow!("no provider and model found!"));
-    }
+    let channel_templates = config.channel_templates()?;
+    let resolver = SessionResolver::new(workspace_root, channel_templates);
+    let mut manager = SessionManager::new(engine, resolver);
 
-    Ok(())
+    CliChannel::new("main").run(&mut manager).await
 }

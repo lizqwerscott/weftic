@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use figment::{
@@ -6,17 +6,21 @@ use figment::{
     providers::{Format, Toml},
 };
 
+use crate::channel::Channel;
 use crate::config::{
+    channel::ChannelConfig,
     model_provider::{ModelRegister, load_model_config},
     system_prompt::SystemPromptConfig,
 };
 
+pub mod channel;
 pub mod model_provider;
 pub mod system_prompt;
 
 pub struct Config {
     pub model_register: ModelRegister,
     pub system_prompt: SystemPromptConfig,
+    pub channels: HashMap<String, ChannelConfig>,
 }
 
 impl Config {
@@ -39,6 +43,18 @@ impl Config {
         Ok(Self {
             model_register,
             system_prompt: app_config.extract_inner("system_prompt")?,
+            channels: app_config.extract_inner("channels")?,
         })
+    }
+
+    pub fn channel_templates(&self) -> Result<HashMap<Channel, String>> {
+        self.channels
+            .iter()
+            .map(|(name, config)| {
+                let channel = Channel::parse(name)
+                    .ok_or_else(|| anyhow!("unknown channel `{name}` in [channels]"))?;
+                Ok((channel, config.template.clone()))
+            })
+            .collect()
     }
 }

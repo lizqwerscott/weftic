@@ -1,16 +1,25 @@
-use std::{collections::HashMap, fs};
+use std::{fs, path::Path};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use minijinja::{Environment, context};
 
 use crate::config::system_prompt::SystemPromptConfig;
 
-pub struct SystemPrompt {
-    prompts: HashMap<String, String>,
+pub struct SystemPromptManager {
+    env: Environment<'static>,
+    character: String,
 }
 
-impl SystemPrompt {
-    pub fn build(config: &SystemPromptConfig, tools: &[String]) -> Result<Self> {
+impl SystemPromptManager {
+    pub fn new(
+        config: &SystemPromptConfig,
+        templates: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
+        let mut template_names: Vec<String> = templates.into_iter().collect();
+
+        template_names.sort();
+        template_names.dedup();
+
         let path = config.character_path.as_path();
 
         if !path.exists() {
@@ -22,26 +31,67 @@ impl SystemPrompt {
 
         let character = fs::read_to_string(path)?;
 
-        let mut prompts = HashMap::new();
+        let prompt_dir_path = Path::new("./prompts");
 
-        let tool_description = tools.join("\n\n");
-
-        let agent_prompt = fs::read_to_string("./prompts/agent.j2")?;
         let mut env = Environment::new();
         env.set_trim_blocks(true);
 
-        env.add_template("agent", &agent_prompt)?;
+        for template in template_names {
+            if !is_valid_template_name(&template) {
+                return Err(anyhow!(
+                    "invalid prompt template name `{template}` (allowed: [A-Za-z0-9_-]+)"
+                ));
+            }
 
-        let agent_template = env.get_template("agent")?;
-        let rendered = agent_template
-            .render(context!(character_card => character, tool_description => tool_description))?;
+            let path = prompt_dir_path.join(Path::new(&format!("{}.j2", template)));
 
-        prompts.insert("agent".to_string(), rendered);
+            let prompt = fs::read_to_string(&path)
+                .with_context(|| format!("reading prompt template {}", path.display()))?;
+            env.add_template_owned(template.clone(), prompt)
+                .with_context(|| format!("compiling prompt template {}", path.display()))?;
+        }
 
-        Ok(Self { prompts })
+        Ok(Self { env, character })
     }
 
-    pub fn render_system_prompt(&self, name: &str) -> Option<String> {
-        self.prompts.get(name).map(|prompt| prompt.to_string())
+    pub fn render(&self, name: &str, tools: &[String]) -> Result<String> {
+        let prompt_template = self.env.get_template(name)?;
+
+        let tool_description = tools.join("\n\n");
+
+        let prompt = prompt_template.render(
+            context! {character_card => self.character, tool_description => tool_description},
+        )?;
+
+        Ok(prompt)
+    }
+}
+
+fn is_valid_template_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_template_names_are_accepted() {
+        assert!(is_valid_template_name("agent"));
+        assert!(is_valid_template_name("telegram-chat_v2"));
+    }
+
+    #[test]
+    fn path_separators_are_rejected() {
+        assert!(!is_valid_template_name("../x"));
+        assert!(!is_valid_template_name("a/b"));
+    }
+
+    #[test]
+    fn empty_names_are_rejected() {
+        assert!(!is_valid_template_name(""));
     }
 }
