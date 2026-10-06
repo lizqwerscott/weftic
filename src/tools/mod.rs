@@ -2,6 +2,7 @@ pub mod bash;
 pub mod files;
 pub mod glob;
 pub mod grep;
+pub mod message;
 
 use std::{collections::HashMap, fmt, pin::Pin, sync::Arc};
 

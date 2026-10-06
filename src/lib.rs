@@ -5,7 +5,7 @@ pub mod event;
 pub mod output;
 pub mod session;
 pub mod system_prompt;
-mod tools;
+pub mod tools;
 pub mod tui;
 
 pub fn hello() {

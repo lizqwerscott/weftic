@@ -10,8 +10,7 @@ const KEY_FIELD_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'~');
 
 pub mod cli;
-
-pub enum ChannelType {}
+pub mod sender;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelChatType {
