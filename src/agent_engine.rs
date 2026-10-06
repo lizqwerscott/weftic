@@ -4,7 +4,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 
 use crate::{
-    config::{Config, model_provider::ResolvedModel},
+    config::model_provider::ChatModel,
     output::OutputSink,
     session::{
         Session,
@@ -41,28 +41,25 @@ impl fmt::Display for TurnStartError {
 impl std::error::Error for TurnStartError {}
 
 pub struct AgentEngine {
-    model: ResolvedModel,
+    model: Arc<dyn ChatModel>,
     tool_router: ToolRouter,
     max_iterations: usize,
     system_prompt_manager: SystemPromptManager,
 }
 
 impl AgentEngine {
-    pub fn new(model: ResolvedModel, config: &Config) -> anyhow::Result<Self> {
-        let mut tool_router = ToolRouter::new();
-
-        tool_router.register_builtin_tools()?;
-
-        let templates = config.channel_templates()?.into_values();
-
-        let system_prompt_manager = SystemPromptManager::new(&config.system_prompt, templates)?;
-
-        Ok(AgentEngine {
+    pub fn new(
+        model: Arc<dyn ChatModel>,
+        tool_router: ToolRouter,
+        system_prompt_manager: SystemPromptManager,
+        max_iterations: usize,
+    ) -> Self {
+        AgentEngine {
             model,
-            max_iterations: 100,
+            max_iterations,
             tool_router,
             system_prompt_manager,
-        })
+        }
     }
 
     pub fn init(&self) -> anyhow::Result<()> {
@@ -119,29 +116,19 @@ impl AgentEngine {
             .with_tools(self.tool_router.declarations())
             .append_messages(history.messages.clone());
 
-        let chat_options = self
-            .model
-            .options
-            .clone()
-            .with_capture_tool_calls(true)
-            .with_capture_usage(true)
-            .with_capture_reasoning_content(true)
-            .with_capture_content(true);
-
         for iteration in 1..=self.max_iterations {
             let chat_req = chat_req.clone().append_messages(steps.messages.clone());
 
             let mut chat_stream = self
                 .model
-                .client
-                .exec_chat_stream(self.model.model_id.as_str(), chat_req, Some(&chat_options))
+                .stream_chat(chat_req)
                 .await
                 .map_err(|e| TurnError::Request(format!("{e:#}")))?;
 
             let mut captured_reasoning: Option<String> = None;
             let mut assistant_content: Option<MessageContent> = None;
 
-            while let Some(result) = chat_stream.stream.next().await {
+            while let Some(result) = chat_stream.next().await {
                 match result.map_err(|e| TurnError::Stream(format!("{e:#}")))? {
                     ChatStreamEvent::Start => {}
                     ChatStreamEvent::Chunk(chunk) => {

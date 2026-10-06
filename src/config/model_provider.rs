@@ -1,21 +1,22 @@
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 use colored::Colorize;
 use figment::{
     Figment,
     providers::{Format, Toml},
 };
+use futures::Stream;
 use genai::Client;
 use genai::ModelIden;
 use genai::ServiceTarget;
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatOptions, ReasoningEffort};
-use genai::resolver::AuthData;
-use genai::resolver::Endpoint;
-use genai::resolver::ServiceTargetResolver;
+use genai::chat::{ChatOptions, ChatRequest, ChatStreamEvent, ReasoningEffort};
+use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use serde::Deserialize;
 
 use anyhow::{Context, Result};
@@ -44,9 +45,47 @@ pub struct Model {
 }
 
 pub struct ResolvedModel {
-    pub client: Client,
-    pub model_id: String,
-    pub options: ChatOptions,
+    client: Client,
+    model_id: String,
+    options: ChatOptions,
+}
+
+pub type BoxedModelFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub type ChatEventStream<'a> =
+    Pin<Box<dyn Stream<Item = genai::Result<ChatStreamEvent>> + Send + 'a>>;
+
+pub trait ChatModel: Send + Sync {
+    fn stream_chat<'a>(
+        &'a self,
+        request: ChatRequest,
+    ) -> BoxedModelFuture<'a, Result<ChatEventStream<'a>>>;
+}
+
+impl ChatModel for ResolvedModel {
+    fn stream_chat<'a>(
+        &'a self,
+        request: ChatRequest,
+    ) -> BoxedModelFuture<'a, Result<ChatEventStream<'a>>> {
+        Box::pin(async move {
+            let options = self
+                .options
+                .clone()
+                .with_capture_tool_calls(true)
+                .with_capture_usage(true)
+                .with_capture_reasoning_content(true)
+                .with_capture_content(true);
+
+            let response = self
+                .client
+                .exec_chat_stream(self.model_id.as_str(), request, Some(&options))
+                .await?;
+
+            let stream: ChatEventStream<'a> = Box::pin(response.stream);
+
+            Ok(stream)
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,4 +344,78 @@ pub fn load_model_config(config_path: impl AsRef<Path>) -> Result<ModelRegister>
     }
 
     Ok(config)
+}
+
+#[cfg(test)]
+pub mod testing {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    use genai::chat::{MessageContent, StopReason, StreamChunk, StreamEnd, Usage};
+
+    use super::*;
+
+    #[derive(Default)]
+    pub struct ScriptedModel {
+        replies: Mutex<VecDeque<Vec<ChatStreamEvent>>>,
+        requests: Mutex<Vec<ChatRequest>>,
+    }
+
+    impl ScriptedModel {
+        pub fn new(replies: Vec<Vec<ChatStreamEvent>>) -> Arc<Self> {
+            Arc::new(Self {
+                replies: Mutex::new(replies.into()),
+                requests: Mutex::new(Vec::new()),
+            })
+        }
+
+        pub fn text_reply(text: &str) -> Arc<Self> {
+            Self::new(vec![text_events(text)])
+        }
+
+        pub fn requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    pub fn text_events(text: &str) -> Vec<ChatStreamEvent> {
+        vec![
+            ChatStreamEvent::Chunk(StreamChunk {
+                content: text.to_string(),
+            }),
+            ChatStreamEvent::End(text_end(text)),
+        ]
+    }
+
+    pub fn text_end(text: &str) -> StreamEnd {
+        StreamEnd {
+            captured_usage: Some(Usage {
+                prompt_tokens: Some(1),
+                completion_tokens: Some(1),
+                total_tokens: Some(2),
+                ..Default::default()
+            }),
+            captured_stop_reason: Some(StopReason::Completed("stop".to_string())),
+            captured_content: Some(MessageContent::from_text(text)),
+            captured_reasoning_content: None,
+            captured_response_id: None,
+        }
+    }
+
+    impl ChatModel for ScriptedModel {
+        fn stream_chat<'a>(
+            &'a self,
+            request: ChatRequest,
+        ) -> BoxedModelFuture<'a, Result<ChatEventStream<'a>>> {
+            Box::pin(async move {
+                self.requests.lock().unwrap().push(request);
+
+                let events = self.replies.lock().unwrap().pop_front().unwrap_or_default();
+                let stream: ChatEventStream<'a> =
+                    Box::pin(futures::stream::iter(events.into_iter().map(Ok)));
+
+                Ok(stream)
+            })
+        }
+    }
 }
