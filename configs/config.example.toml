@@ -2,5 +2,8 @@
 [channels.cli]
 template = "agent"
 
+[engine]
+max_iterations = 100
+
 [system_prompt]
 character_path = "./characters/default.md"

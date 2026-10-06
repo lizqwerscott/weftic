@@ -9,11 +9,13 @@ use figment::{
 use crate::channel::Channel;
 use crate::config::{
     channel::ChannelConfig,
+    engine::EngineConfig,
     model_provider::{ModelRegister, load_model_config},
     system_prompt::SystemPromptConfig,
 };
 
 pub mod channel;
+pub mod engine;
 pub mod model_provider;
 pub mod system_prompt;
 
@@ -21,6 +23,7 @@ pub struct Config {
     pub model_register: ModelRegister,
     pub system_prompt: SystemPromptConfig,
     pub channels: HashMap<String, ChannelConfig>,
+    pub engine: EngineConfig,
 }
 
 impl Config {
@@ -40,10 +43,18 @@ impl Config {
 
         let app_config = Figment::new().merge(Toml::file(config_path));
 
+        let engine = if app_config.contains("engine") {
+            app_config.extract_inner("engine")?
+        } else {
+            EngineConfig::default()
+        };
+        engine.validate()?;
+
         Ok(Self {
             model_register,
             system_prompt: app_config.extract_inner("system_prompt")?,
             channels: app_config.extract_inner("channels")?,
+            engine,
         })
     }
 

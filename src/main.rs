@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
         model,
         tool_router,
         system_prompt_manager,
-        100,
+        config.engine.max_iterations,
     ));
     engine.init()?;
 
