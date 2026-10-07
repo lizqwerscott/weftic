@@ -57,10 +57,15 @@ impl UpdateSource for TelegramUpdates {
                 .get(&url)
                 .send()
                 .await
-                .context("calling telegram getUpdates")?
+                .map_err(|error| anyhow!("calling telegram getUpdates: {}", error.without_url()))?
                 .text()
                 .await
-                .context("reading telegram getUpdates response")?;
+                .map_err(|error| {
+                    anyhow!(
+                        "reading telegram getUpdates response: {}",
+                        error.without_url()
+                    )
+                })?;
 
             parse_updates(&body)
         })

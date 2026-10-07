@@ -10,6 +10,7 @@ use weftic::channel::cli::CliChannel;
 use weftic::channel::registry::{ChannelRegistry, CliRuntime};
 use weftic::channel::telegram::poll::TelegramPoller;
 use weftic::channel::telegram::send::TelegramRuntime;
+use weftic::config::channel::DEFAULT_MAX_SEND_ATTEMPTS;
 use weftic::config::{Config, model_provider::ChatModel};
 use weftic::event_store::EventStore;
 use weftic::output::{NullSink, OutputSink};
@@ -63,9 +64,14 @@ async fn main() -> Result<()> {
     let mut registry = ChannelRegistry::new();
     registry.register(Channel::Cli, Arc::new(CliRuntime));
     if let Some(token) = &telegram_token {
+        let attempts = config
+            .channels
+            .get("telegram")
+            .map(|channel| channel.max_send_attempts)
+            .unwrap_or(DEFAULT_MAX_SEND_ATTEMPTS);
         registry.register(
             Channel::Telegram,
-            Arc::new(TelegramRuntime::new(token.clone())),
+            Arc::new(TelegramRuntime::new(token.clone(), attempts)),
         );
     }
     let registry = Arc::new(registry);

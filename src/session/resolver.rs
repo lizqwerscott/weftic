@@ -124,7 +124,10 @@ mod tests {
 
         let mut registry = ChannelRegistry::new();
         registry.register(Channel::Cli, Arc::new(CliRuntime));
-        registry.register(Channel::Telegram, Arc::new(TelegramRuntime::new("token")));
+        registry.register(
+            Channel::Telegram,
+            Arc::new(TelegramRuntime::new("token", 3)),
+        );
 
         let permissions = Permissions {
             owner: vec!["telegram:123456".to_string()],
