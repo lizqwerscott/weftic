@@ -2,8 +2,11 @@ use std::fmt;
 
 use genai::chat::{ChatMessage, ChatRequest, StopReason, Usage};
 
+use crate::event::EventId;
+
 pub struct SessionStep {
     data: ChatMessage,
+    source_event_id: Option<EventId>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,16 +52,26 @@ pub struct SessionTurn {
 impl SessionTurn {
     pub fn new(
         chat_req: &ChatRequest,
+        source_event_id: Option<EventId>,
         status: TurnStatus,
         stop_reason: Option<StopReason>,
         usage: Option<Usage>,
     ) -> Self {
+        let mut steps: Vec<SessionStep> = chat_req
+            .messages
+            .iter()
+            .map(|msg| SessionStep {
+                data: msg.clone(),
+                source_event_id: None,
+            })
+            .collect();
+
+        if let Some(first) = steps.first_mut() {
+            first.source_event_id = source_event_id;
+        }
+
         Self {
-            steps: chat_req
-                .messages
-                .iter()
-                .map(|msg| SessionStep { data: msg.clone() })
-                .collect(),
+            steps,
             status,
             stop_reason,
             usage,
@@ -136,5 +149,19 @@ mod tests {
     #[test]
     fn other_renders_verbatim() {
         assert_eq!(TurnError::Other("boom".to_string()).to_string(), "boom");
+    }
+
+    #[test]
+    fn a_turn_attaches_its_source_event_to_the_opening_step_only() {
+        use genai::chat::MessageContent;
+
+        let chat = ChatRequest::default()
+            .append_message(ChatMessage::user("hi"))
+            .append_message(ChatMessage::assistant(MessageContent::from_text("hello")));
+
+        let turn = SessionTurn::new(&chat, Some(EventId(7)), TurnStatus::Complete, None, None);
+
+        assert_eq!(turn.steps[0].source_event_id, Some(EventId(7)));
+        assert_eq!(turn.steps[1].source_event_id, None);
     }
 }

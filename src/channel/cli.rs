@@ -5,10 +5,10 @@ use colored::Colorize;
 use rustyline::error::ReadlineError;
 use tokio::sync::oneshot;
 
-use crate::channel::{Channel, DeliveryTarget, SessionKey};
+use crate::channel::{Channel, DeliveryTarget};
 use crate::event::{ActorRef, Event};
 use crate::output::OutputSink;
-use crate::session::manager::{SessionInput, SessionManager};
+use crate::session::manager::{IngestOutcome, SessionManager};
 use crate::tui::cli_sink::CliSink;
 use crate::tui::input::build_input;
 
@@ -16,21 +16,13 @@ const CLI_SENDER: &str = "member_cli";
 
 pub struct CliChannel {
     target: DeliveryTarget,
-    session_key: SessionKey,
 }
 
 impl CliChannel {
-    pub fn new(agent_id: &str) -> Self {
-        let target = DeliveryTarget::direct(Channel::Cli, "default", "cli");
-        let session_key = target.to_session_key(agent_id);
+    pub fn new() -> Self {
         Self {
-            target,
-            session_key,
+            target: DeliveryTarget::direct(Channel::Cli, "default", "cli"),
         }
-    }
-
-    pub fn session_key(&self) -> &SessionKey {
-        &self.session_key
     }
 
     pub fn event(&self, text: impl Into<String>) -> Event {
@@ -65,24 +57,21 @@ impl CliChannel {
         let (reply, reply_rx) = oneshot::channel();
         let sink: Arc<dyn OutputSink> = Arc::new(CliSink::new());
 
-        manager
-            .submit(
-                &self.session_key,
-                SessionInput::Turn {
-                    events: vec![self.event(text)],
-                    sink,
-                    reply,
-                },
-            )
-            .await?;
-
-        match reply_rx.await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => println!("{}: {}", "Error".red(), err),
-            Err(_) => println!("{}: session task ended", "Error".red()),
+        if let IngestOutcome::Turn { .. } = manager.ingest(self.event(text), sink, reply).await? {
+            match reply_rx.await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => println!("{}: {}", "Error".red(), err),
+                Err(_) => println!("{}: session task ended", "Error".red()),
+            }
         }
 
         Ok(())
+    }
+}
+
+impl Default for CliChannel {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -92,17 +81,8 @@ mod tests {
     use crate::event::{EventOrigin, Part, PlatformKind};
 
     #[test]
-    fn session_key_is_the_canonical_cli_key() {
-        let channel = CliChannel::new("main");
-        assert_eq!(
-            channel.session_key().as_str(),
-            "agent:main:cli:default:direct:cli"
-        );
-    }
-
-    #[test]
     fn event_is_a_cli_platform_text_message() {
-        let channel = CliChannel::new("main");
+        let channel = CliChannel::new();
         let event = channel.event("hi");
 
         let EventOrigin::Platform(platform) = event.origin else {

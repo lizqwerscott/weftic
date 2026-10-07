@@ -8,7 +8,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agent_engine::AgentEngine;
 use crate::channel::SessionKey;
-use crate::event::{Event, EventOrigin, Part};
+use crate::event::{Event, EventId, EventOrigin, Part};
+use crate::event_store::{AppendOutcome, EventStore, StoredEvent};
 use crate::output::OutputSink;
 use crate::session::Session;
 use crate::session::history::TurnStatus;
@@ -18,10 +19,16 @@ const SESSION_QUEUE: usize = 16;
 
 pub enum SessionInput {
     Turn {
-        events: Vec<Event>,
+        events: Vec<StoredEvent>,
         sink: Arc<dyn OutputSink>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestOutcome {
+    Turn { event_id: EventId },
+    Duplicate { event_id: EventId },
 }
 
 #[derive(Clone)]
@@ -42,18 +49,59 @@ pub struct SessionManager {
     engine: Arc<AgentEngine>,
     resolver: SessionResolver,
     sessions: HashMap<SessionKey, SessionHandle>,
+    event_store: EventStore,
+    agent_id: String,
 }
 
 impl SessionManager {
-    pub fn new(engine: Arc<AgentEngine>, resolver: SessionResolver) -> Self {
+    pub fn new(
+        engine: Arc<AgentEngine>,
+        resolver: SessionResolver,
+        agent_id: impl Into<String>,
+    ) -> Self {
         Self {
             engine,
             resolver,
             sessions: HashMap::new(),
+            event_store: EventStore::new(),
+            agent_id: agent_id.into(),
         }
     }
 
-    pub fn ensure(&mut self, key: &SessionKey) -> Result<SessionHandle> {
+    /// Append an inbound event (deduping it), then route it to its session.
+    pub async fn ingest(
+        &mut self,
+        event: Event,
+        sink: Arc<dyn OutputSink>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    ) -> Result<IngestOutcome> {
+        let key = session_key_for(&event, &self.agent_id)?;
+
+        match self.event_store.append(event) {
+            AppendOutcome::Duplicate(event_id) => Ok(IngestOutcome::Duplicate { event_id }),
+            AppendOutcome::Appended(event_id) => {
+                let stored = self
+                    .event_store
+                    .get(event_id)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("event {event_id:?} vanished right after append"))?;
+
+                self.submit(
+                    &key,
+                    SessionInput::Turn {
+                        events: vec![stored],
+                        sink,
+                        reply,
+                    },
+                )
+                .await?;
+
+                Ok(IngestOutcome::Turn { event_id })
+            }
+        }
+    }
+
+    fn ensure(&mut self, key: &SessionKey) -> Result<SessionHandle> {
         match self.sessions.entry(key.clone()) {
             Entry::Occupied(existing) => Ok(existing.get().clone()),
             Entry::Vacant(vacant) => {
@@ -67,9 +115,19 @@ impl SessionManager {
         }
     }
 
-    pub async fn submit(&mut self, key: &SessionKey, input: SessionInput) -> Result<()> {
+    async fn submit(&mut self, key: &SessionKey, input: SessionInput) -> Result<()> {
         let handle = self.ensure(key)?;
         handle.submit(input).await
+    }
+}
+
+fn session_key_for(event: &Event, agent_id: &str) -> Result<SessionKey> {
+    match &event.origin {
+        EventOrigin::Platform(platform) => Ok(platform.target.to_session_key(agent_id)),
+        EventOrigin::Runtime(runtime) => Err(anyhow!(
+            "runtime event `{:?}` has no delivery target yet",
+            runtime.kind
+        )),
     }
 }
 
@@ -85,9 +143,12 @@ async fn run_session(
                 sink,
                 reply,
             } => {
-                let projected = project(&events);
+                let (message, source_event_id) = project(&events);
 
-                match engine.run_turn(&session, projected, &sink).await {
+                match engine
+                    .run_turn(&session, message, source_event_id, &sink)
+                    .await
+                {
                     Ok(turn) => {
                         let outcome = match turn.status() {
                             TurnStatus::Failed(err) => Err(anyhow::Error::new(err.clone())),
@@ -107,12 +168,19 @@ async fn run_session(
     }
 }
 
-fn project(events: &[Event]) -> ChatMessage {
+fn project(events: &[StoredEvent]) -> (ChatMessage, Option<EventId>) {
     let mut text = String::new();
-    for event in events {
-        let EventOrigin::Platform(platform) = &event.origin else {
+    let mut source_event_id = None;
+
+    for stored in events {
+        let EventOrigin::Platform(platform) = &stored.event.origin else {
             continue;
         };
+
+        if source_event_id.is_none() {
+            source_event_id = Some(stored.id);
+        }
+
         for part in &platform.parts {
             if let Part::Text { text: chunk, .. } = part {
                 if !text.is_empty() {
@@ -122,7 +190,8 @@ fn project(events: &[Event]) -> ChatMessage {
             }
         }
     }
-    ChatMessage::user(text)
+
+    (ChatMessage::user(text), source_event_id)
 }
 
 #[cfg(test)]
@@ -136,7 +205,7 @@ mod tests {
     use crate::channel::{Channel, DeliveryTarget};
     use crate::config::model_provider::testing::{ScriptedModel, text_events};
     use crate::config::system_prompt::SystemPromptConfig;
-    use crate::event::ActorRef;
+    use crate::event::{ActorRef, DedupKey};
     use crate::system_prompt::SystemPromptManager;
     use crate::tools::ToolRouter;
 
@@ -168,20 +237,30 @@ mod tests {
         }
     }
 
-    fn cli_target() -> DeliveryTarget {
-        DeliveryTarget::direct(Channel::Cli, "default", "cli")
-    }
-
-    fn cli_key() -> SessionKey {
-        cli_target().to_session_key("main")
-    }
-
-    fn key_for(target: &str) -> SessionKey {
-        DeliveryTarget::direct(Channel::Cli, "default", target).to_session_key("main")
+    fn event_to(target: &str, text: &str) -> Event {
+        Event::platform_text(
+            DeliveryTarget::direct(Channel::Cli, "default", target),
+            ActorRef::new(CLI_SENDER),
+            text,
+        )
     }
 
     fn event(text: &str) -> Event {
-        Event::platform_text(cli_target(), ActorRef::new(CLI_SENDER), text)
+        event_to("cli", text)
+    }
+
+    fn replayed_event(text: &str, platform_event_id: &str) -> Event {
+        let mut built = event(text);
+
+        let EventOrigin::Platform(platform) = &mut built.origin else {
+            panic!("helper must build a platform event");
+        };
+        platform.dedup = Some(DedupKey {
+            platform: Channel::Cli,
+            platform_event_id: platform_event_id.to_string(),
+        });
+
+        built
     }
 
     fn session_manager(model: Arc<ScriptedModel>) -> SessionManager {
@@ -205,28 +284,17 @@ mod tests {
         templates.insert(Channel::Cli, "agent".to_string());
         let resolver = SessionResolver::new(PathBuf::from("/work"), templates);
 
-        SessionManager::new(engine, resolver)
+        SessionManager::new(engine, resolver, "main")
     }
 
     async fn enqueue(
         manager: &mut SessionManager,
-        key: &SessionKey,
-        text: &str,
+        event: Event,
     ) -> (oneshot::Receiver<anyhow::Result<()>>, Arc<RecordingSink>) {
         let sink = Arc::new(RecordingSink::default());
         let (reply, reply_rx) = oneshot::channel();
 
-        manager
-            .submit(
-                key,
-                SessionInput::Turn {
-                    events: vec![event(text)],
-                    sink: sink.clone(),
-                    reply,
-                },
-            )
-            .await
-            .unwrap();
+        manager.ingest(event, sink.clone(), reply).await.unwrap();
 
         (reply_rx, sink)
     }
@@ -240,7 +308,7 @@ mod tests {
         let model = ScriptedModel::text_reply("hello back");
         let mut manager = session_manager(model.clone());
 
-        let (reply, sink) = enqueue(&mut manager, &cli_key(), "hello").await;
+        let (reply, sink) = enqueue(&mut manager, event("hello")).await;
         let outcome = reply.await.unwrap();
 
         assert!(outcome.is_ok(), "turn failed: {:?}", outcome.err());
@@ -253,9 +321,9 @@ mod tests {
         let model = ScriptedModel::new(vec![text_events("REPLY_ALPHA"), text_events("REPLY_BETA")]);
         let mut manager = session_manager(model.clone());
 
-        let (alpha, _) = enqueue(&mut manager, &key_for("alpha"), "USER_ALPHA").await;
+        let (alpha, _) = enqueue(&mut manager, event_to("alpha", "USER_ALPHA")).await;
         assert!(alpha.await.unwrap().is_ok());
-        let (beta, _) = enqueue(&mut manager, &key_for("beta"), "USER_BETA").await;
+        let (beta, _) = enqueue(&mut manager, event_to("beta", "USER_BETA")).await;
         assert!(beta.await.unwrap().is_ok());
 
         assert_eq!(model.requests().len(), 2);
@@ -270,10 +338,9 @@ mod tests {
     async fn same_key_processes_turns_in_order_and_continues_the_history() {
         let model = ScriptedModel::new(vec![text_events("REPLY_ONE"), text_events("REPLY_TWO")]);
         let mut manager = session_manager(model.clone());
-        let key = cli_key();
 
-        let (first, _) = enqueue(&mut manager, &key, "USER_ONE").await;
-        let (second, _) = enqueue(&mut manager, &key, "USER_TWO").await;
+        let (first, _) = enqueue(&mut manager, event("USER_ONE")).await;
+        let (second, _) = enqueue(&mut manager, event("USER_TWO")).await;
         assert!(first.await.unwrap().is_ok());
         assert!(second.await.unwrap().is_ok());
 
@@ -287,5 +354,32 @@ mod tests {
         assert!(second_request.contains("USER_ONE"));
         assert!(second_request.contains("REPLY_ONE"));
         assert!(second_request.contains("USER_TWO"));
+    }
+
+    #[tokio::test]
+    async fn a_replayed_event_is_dropped_and_starts_no_turn() {
+        let model = ScriptedModel::new(vec![text_events("REPLY")]);
+        let mut manager = session_manager(model.clone());
+
+        let (reply, _) = enqueue(&mut manager, replayed_event("hi", "42")).await;
+        assert!(reply.await.unwrap().is_ok());
+
+        let (replay_tx, _replay_rx) = oneshot::channel();
+        let outcome = manager
+            .ingest(
+                replayed_event("hi", "42"),
+                Arc::new(RecordingSink::default()),
+                replay_tx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            IngestOutcome::Duplicate {
+                event_id: EventId(1)
+            }
+        );
+        assert_eq!(model.requests().len(), 1);
     }
 }

@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let workspace_root = std::env::current_dir()?;
 
     let resolver = SessionResolver::new(workspace_root, channel_templates);
-    let mut manager = SessionManager::new(engine, resolver);
+    let mut manager = SessionManager::new(engine, resolver, "main");
 
-    CliChannel::new("main").run(&mut manager).await
+    CliChannel::new().run(&mut manager).await
 }

@@ -5,6 +5,7 @@ use futures::StreamExt;
 
 use crate::{
     config::model_provider::ChatModel,
+    event::EventId,
     output::OutputSink,
     session::{
         Session,
@@ -71,6 +72,7 @@ impl AgentEngine {
         &self,
         session: &Session,
         input: ChatMessage,
+        source_event_id: Option<EventId>,
         sink: &Arc<dyn OutputSink>,
     ) -> Result<SessionTurn, TurnStartError> {
         let mut steps = ChatRequest::default().append_message(input);
@@ -98,6 +100,7 @@ impl AgentEngine {
 
         Ok(SessionTurn::new(
             &steps,
+            source_event_id,
             status,
             meta.stop_reason,
             meta.usage,

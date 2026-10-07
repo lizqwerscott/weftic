@@ -2,6 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::channel::{Channel, DeliveryTarget};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EventId(pub u64);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub delivery: Delivery,
@@ -16,7 +19,7 @@ impl Event {
     ) -> Self {
         Self {
             delivery: Delivery::Durable,
-            origin: EventOrigin::Platform(PlatformEvent {
+            origin: EventOrigin::Platform(Box::new(PlatformEvent {
                 kind: PlatformKind::Message,
                 target,
                 envelope: Envelope {
@@ -37,14 +40,14 @@ impl Event {
                 }],
                 dedup: None,
                 raw: None,
-            }),
+            })),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventOrigin {
-    Platform(PlatformEvent),
+    Platform(Box<PlatformEvent>),
     Runtime(RuntimeEvent),
 }
 
@@ -235,7 +238,7 @@ mod tests {
     fn cli_message(text: &str) -> Event {
         Event {
             delivery: Delivery::Durable,
-            origin: EventOrigin::Platform(PlatformEvent {
+            origin: EventOrigin::Platform(Box::new(PlatformEvent {
                 kind: PlatformKind::Message,
                 target: DeliveryTarget::direct(Channel::Cli, "default", "cli"),
                 envelope: Envelope {
@@ -256,7 +259,7 @@ mod tests {
                 }],
                 dedup: None,
                 raw: None,
-            }),
+            })),
         }
     }
 
