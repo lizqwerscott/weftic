@@ -1,11 +1,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use crate::channel::{Channel, DeliveryTarget};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct EventId(pub u64);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub delivery: Delivery,
     pub origin: EventOrigin,
@@ -45,13 +47,13 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EventOrigin {
     Platform(Box<PlatformEvent>),
     Runtime(RuntimeEvent),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlatformEvent {
     pub kind: PlatformKind,
     pub target: DeliveryTarget,
@@ -61,14 +63,14 @@ pub struct PlatformEvent {
     pub raw: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeEvent {
     pub kind: RuntimeKind,
     pub scope: InternalScope,
     pub correlation_id: Option<CorrelationId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlatformKind {
     Message,
     EditedMessage,
@@ -77,7 +79,7 @@ pub enum PlatformKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RuntimeKind {
     Cron,
     Heartbeat,
@@ -86,7 +88,7 @@ pub enum RuntimeKind {
     Notice,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ServiceKind {
     MemberJoined,
     MemberLeft,
@@ -94,29 +96,29 @@ pub enum ServiceKind {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Delivery {
     Durable,
     Ephemeral,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InternalScope {
     Cron { job: String, run: String },
     Heartbeat,
     WorkPlan { name: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DedupKey {
     pub platform: Channel,
     pub platform_event_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CorrelationId(pub String);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
     pub sender: ActorRef,
     pub sender_name: Option<String>,
@@ -130,7 +132,7 @@ pub struct Envelope {
     pub reply_markup: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActorRef(String);
 
 impl ActorRef {
@@ -143,28 +145,28 @@ impl ActorRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MsgRef(pub String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Quote {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ForwardOrigin {
     pub sender_name: Option<String>,
     pub actor: Option<ActorRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Mention {
     pub actor: ActorRef,
     pub name: String,
     pub is_bot: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Part {
     Text {
         text: String,
@@ -189,17 +191,17 @@ pub enum Part {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaHandle(pub String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Entity {
     pub kind: EntityKind,
     pub offset: usize,
     pub length: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EntityKind {
     Bold,
     Italic,
@@ -210,7 +212,7 @@ pub enum EntityKind {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Timestamp(i64);
 
 impl Timestamp {

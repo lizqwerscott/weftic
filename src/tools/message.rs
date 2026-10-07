@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::channel::sender::ChannelSender;
+use crate::permissions::ToolGroup;
 
 use super::Tool;
 
@@ -28,6 +29,7 @@ impl MessageTool {
 impl Tool for MessageTool {
     type Args = MessageToolArgs;
     const NAME: &'static str = "message";
+    const GROUP: ToolGroup = ToolGroup::Outbound;
 
     fn description(&self) -> &str {
         "Send or edit a message in the current conversation. `action=\"send\"` posts `text`; `action=\"edit\"` replaces the `text` of the `message_id` returned by an earlier send. The destination is fixed to the conversation this turn came from; you cannot target another chat."

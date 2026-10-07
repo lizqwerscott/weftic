@@ -17,3 +17,6 @@ characters/*
 
 # Agent local state (Command Code)
 /.commandcode/
+
+# Local runtime data (event store)
+/data/

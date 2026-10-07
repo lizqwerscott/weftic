@@ -351,7 +351,7 @@ pub mod testing {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use genai::chat::{MessageContent, StopReason, StreamChunk, StreamEnd, Usage};
+    use genai::chat::{MessageContent, StopReason, StreamChunk, StreamEnd, ToolCall, Usage};
 
     use super::*;
 
@@ -400,6 +400,30 @@ pub mod testing {
             captured_reasoning_content: None,
             captured_response_id: None,
         }
+    }
+
+    pub fn tool_call_events(
+        call_id: &str,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Vec<ChatStreamEvent> {
+        vec![ChatStreamEvent::End(StreamEnd {
+            captured_usage: Some(Usage {
+                prompt_tokens: Some(1),
+                completion_tokens: Some(1),
+                total_tokens: Some(2),
+                ..Default::default()
+            }),
+            captured_stop_reason: Some(StopReason::ToolCall("tool_use".to_string())),
+            captured_content: Some(MessageContent::from_tool_calls(vec![ToolCall {
+                call_id: call_id.to_string(),
+                fn_name: name.to_string(),
+                fn_arguments: arguments,
+                thought_signatures: None,
+            }])),
+            captured_reasoning_content: None,
+            captured_response_id: None,
+        })]
     }
 
     impl ChatModel for ScriptedModel {

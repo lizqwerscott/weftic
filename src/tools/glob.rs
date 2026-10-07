@@ -10,6 +10,8 @@ use serde::Deserialize;
 use anyhow::{Result, anyhow};
 use serde_json::json;
 
+use crate::permissions::ToolGroup;
+
 use super::Tool;
 
 const GLOB_VCS_EXCLUDES: &[&str] = &[".git", ".svn", ".hg", ".bzr", ".jj", ".sl"];
@@ -26,6 +28,7 @@ pub struct GlobTool;
 impl Tool for GlobTool {
     type Args = GlobToolArgs;
     const NAME: &'static str = "glob";
+    const GROUP: ToolGroup = ToolGroup::File;
 
     fn description(&self) -> &str {
         "Find files whose path matches a glob pattern. Returns matching file paths only, never directories, \

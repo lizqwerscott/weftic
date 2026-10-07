@@ -17,13 +17,22 @@ use crate::{
 use genai::chat::{
     ChatMessage, ChatRequest, ChatStreamEvent, MessageContent, StopReason, ToolCall, Usage,
 };
+use tracing::{error, info};
 
+use crate::channel::capabilities::ReplyMode;
+use crate::permissions::allowed_groups;
+use crate::tools::Tool;
 use crate::tools::ToolRouter;
+use crate::tools::message::MessageTool;
 
 #[derive(Default)]
 struct TurnMeta {
     stop_reason: Option<StopReason>,
     usage: Option<Usage>,
+    /// Whether the outbound `message` tool ran this turn.
+    delivered: bool,
+    /// The final assistant text, when the turn ended with any.
+    final_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +73,7 @@ impl AgentEngine {
     }
 
     pub fn init(&self) -> anyhow::Result<()> {
-        println!("registered tools: {:?}", self.tool_router.names());
+        info!("registered tools: {:?}", self.tool_router.names());
         Ok(())
     }
 
@@ -75,13 +84,19 @@ impl AgentEngine {
         source_event_id: Option<EventId>,
         sink: &Arc<dyn OutputSink>,
     ) -> Result<SessionTurn, TurnStartError> {
+        let router = self.tool_router.for_session(
+            &allowed_groups(session.mode(), session.role()),
+            session.binding().capabilities.reply,
+            session.binding().sender.clone(),
+        );
+
         let mut steps = ChatRequest::default().append_message(input);
 
         let system = self
             .system_prompt_manager
             .render(
                 session.get_template(),
-                &self.tool_router.get_tool_system_descriptions(),
+                &router.get_tool_system_descriptions(),
             )
             .map_err(|e| TurnStartError::Render(format!("{e:#}")))?;
 
@@ -89,7 +104,7 @@ impl AgentEngine {
         let mut meta = TurnMeta::default();
 
         let error = self
-            .drive(system, &history, &mut steps, sink, &mut meta)
+            .drive(system, &history, &mut steps, sink, &mut meta, &router)
             .await
             .err();
 
@@ -97,6 +112,10 @@ impl AgentEngine {
             Some(source) => TurnStatus::Failed(source),
             None => TurnStatus::Complete,
         };
+
+        if matches!(status, TurnStatus::Complete) {
+            deliver_fallback(session, &meta).await;
+        }
 
         Ok(SessionTurn::new(
             &steps,
@@ -114,9 +133,10 @@ impl AgentEngine {
         steps: &mut ChatRequest,
         sink: &Arc<dyn OutputSink>,
         meta: &mut TurnMeta,
+        router: &ToolRouter,
     ) -> Result<(), TurnError> {
         let chat_req = ChatRequest::from_system(system.clone())
-            .with_tools(self.tool_router.declarations())
+            .with_tools(router.declarations())
             .append_messages(history.messages.clone());
 
         for iteration in 1..=self.max_iterations {
@@ -162,6 +182,10 @@ impl AgentEngine {
                 .as_ref()
                 .is_some_and(|c| !c.texts().is_empty());
 
+            let final_text = assistant_content
+                .as_ref()
+                .map(|content| content.texts().join("\n"));
+
             let mut assistant_msg = match assistant_content.take() {
                 Some(content) => ChatMessage::assistant(content),
                 None => ChatMessage::assistant(MessageContent::from_parts(vec![])),
@@ -170,7 +194,14 @@ impl AgentEngine {
             assistant_msg = assistant_msg.with_reasoning_content(captured_reasoning.take());
 
             if !tool_calls.is_empty() {
-                let tool_responses = self.tool_router.dispatch_all(&tool_calls).await;
+                if tool_calls
+                    .iter()
+                    .any(|call| call.fn_name == MessageTool::NAME)
+                {
+                    meta.delivered = true;
+                }
+
+                let tool_responses = router.dispatch_all(&tool_calls).await;
                 sink.on_tool_calls(&tool_calls, &tool_responses);
 
                 let current = std::mem::take(steps);
@@ -201,12 +232,37 @@ impl AgentEngine {
             let current = std::mem::take(steps);
             *steps = current.append_message(assistant_msg);
 
+            meta.final_text = final_text;
+
             return Ok(());
         }
 
         Err(TurnError::MaxIterations {
             limit: self.max_iterations,
         })
+    }
+}
+
+async fn deliver_fallback(session: &Session, meta: &TurnMeta) {
+    if meta.delivered || session.binding().capabilities.reply != ReplyMode::MessageTool {
+        return;
+    }
+
+    let Some(sender) = &session.binding().sender else {
+        return;
+    };
+
+    let Some(text) = meta.final_text.as_deref() else {
+        return;
+    };
+
+    if text.trim().is_empty() {
+        return;
+    }
+
+    match sender.send_message(text).await {
+        Ok(sent) => info!(target: "outbound", "fallback delivered message {}", sent.id),
+        Err(error) => error!(target: "outbound", "fallback delivery failed: {error:#}"),
     }
 }
 

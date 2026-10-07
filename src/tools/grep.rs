@@ -14,6 +14,7 @@ use ignore::{
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::permissions::ToolGroup;
 use crate::tools::{MAX_LINE_LENGTH, truncate_line};
 
 use super::Tool;
@@ -101,6 +102,7 @@ pub struct GrepTool;
 impl Tool for GrepTool {
     type Args = GrepToolArgs;
     const NAME: &'static str = "grep";
+    const GROUP: ToolGroup = ToolGroup::File;
 
     fn description(&self) -> &str {
         "Search file contents with a ripgrep regex and return grouped matches."

@@ -10,6 +10,8 @@ use anyhow::{Result, anyhow};
 use serde_json::json;
 use tokio::process::Command;
 
+use crate::permissions::ToolGroup;
+
 use super::Tool;
 
 const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -29,6 +31,7 @@ pub struct BashTool;
 impl Tool for BashTool {
     type Args = BashToolArgs;
     const NAME: &'static str = "bash";
+    const GROUP: ToolGroup = ToolGroup::Exec;
 
     fn description(&self) -> &str {
         "Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh shell; pass `workdir` instead of using `cd`. Long output is truncated to its tail. Provide `description` before `command` in the arguments. Before any delete or move, verify that the resolved absolute target path is the intended one; never run it against a computed path you have not checked. An unset variable expands to an empty string, so guard variables in such paths with `${VAR:?}`."

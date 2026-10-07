@@ -2,6 +2,7 @@ use std::borrow::Borrow;
 use std::fmt;
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+use serde::{Deserialize, Serialize};
 
 const KEY_FIELD_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -9,10 +10,14 @@ const KEY_FIELD_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 
+pub mod adapter;
+pub mod capabilities;
 pub mod cli;
+pub mod registry;
 pub mod sender;
+pub mod telegram;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChannelChatType {
     Direct,
     Group,
@@ -37,7 +42,7 @@ impl ChannelChatType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Channel {
     Cli,
     Webui,
@@ -124,7 +129,7 @@ impl Borrow<str> for SessionKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DeliveryTarget {
     channel: Channel,
     account_id: String,
@@ -171,6 +176,18 @@ impl DeliveryTarget {
     pub fn channel(&self) -> &Channel {
         &self.channel
     }
+
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    pub fn chat_type(&self) -> ChannelChatType {
+        self.chat_type
+    }
+
+    pub fn target_id(&self) -> &str {
+        &self.target_id
+    }
 }
 
 #[cfg(test)]
@@ -178,13 +195,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cli_direct_key_matches_architecture_example() {
+    fn cli_direct_key_is_canonical() {
         let key = DeliveryTarget::direct(Channel::Cli, "default", "cli").to_session_key("main");
         assert_eq!(key.as_str(), "agent:main:cli:default:direct:cli");
     }
 
     #[test]
-    fn webui_direct_key_matches_architecture_example() {
+    fn webui_direct_key_is_canonical() {
         let key =
             DeliveryTarget::direct(Channel::Webui, "default", "lizqwer").to_session_key("main");
         assert_eq!(key.as_str(), "agent:main:webui:default:direct:lizqwer");

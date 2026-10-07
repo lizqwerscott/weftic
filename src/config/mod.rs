@@ -11,12 +11,15 @@ use crate::config::{
     channel::ChannelConfig,
     engine::EngineConfig,
     model_provider::{ModelRegister, load_model_config},
+    storage::StorageConfig,
     system_prompt::SystemPromptConfig,
 };
+use crate::permissions::Permissions;
 
 pub mod channel;
 pub mod engine;
 pub mod model_provider;
+pub mod storage;
 pub mod system_prompt;
 
 pub struct Config {
@@ -24,6 +27,8 @@ pub struct Config {
     pub system_prompt: SystemPromptConfig,
     pub channels: HashMap<String, ChannelConfig>,
     pub engine: EngineConfig,
+    pub storage: StorageConfig,
+    pub permissions: Permissions,
 }
 
 impl Config {
@@ -50,11 +55,25 @@ impl Config {
         };
         engine.validate()?;
 
+        let storage = if app_config.contains("storage") {
+            app_config.extract_inner("storage")?
+        } else {
+            StorageConfig::default()
+        };
+
+        let permissions = if app_config.contains("permissions") {
+            app_config.extract_inner("permissions")?
+        } else {
+            Permissions::default()
+        };
+
         Ok(Self {
             model_register,
             system_prompt: app_config.extract_inner("system_prompt")?,
             channels: app_config.extract_inner("channels")?,
             engine,
+            storage,
+            permissions,
         })
     }
 
@@ -67,5 +86,30 @@ impl Config {
                 Ok((channel, config.template.clone()))
             })
             .collect()
+    }
+
+    /// The Telegram bot token, if the `[channels.telegram]` entry carries one.
+    /// A `<ENV_NAME>` value is resolved from the environment.
+    pub fn telegram_token(&self) -> Result<Option<String>> {
+        let Some(channel) = self.channels.get("telegram") else {
+            return Ok(None);
+        };
+
+        match &channel.token {
+            Some(token) => Ok(Some(resolve_env(token)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+fn resolve_env(value: &str) -> Result<String> {
+    match value
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+    {
+        Some(name) => {
+            std::env::var(name).map_err(|_| anyhow!("environment variable `{name}` is not set"))
+        }
+        None => Ok(value.to_string()),
     }
 }

@@ -11,11 +11,15 @@ use serde_json::{Value, json};
 
 use genai::chat::{Tool as GenaiTool, ToolCall, ToolResponse};
 
+use crate::channel::capabilities::ReplyMode;
+use crate::channel::sender::ChannelSender;
+use crate::permissions::ToolGroup;
 use crate::tools::{
     bash::BashTool,
     files::{EditTool, ReadTool, WriteTool},
     glob::GlobTool,
     grep::GrepTool,
+    message::MessageTool,
 };
 
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -62,6 +66,7 @@ pub trait Tool: Send + Sync + 'static {
     type Args: DeserializeOwned + Send;
 
     const NAME: &'static str;
+    const GROUP: ToolGroup;
 
     fn description(&self) -> &str;
 
@@ -76,6 +81,7 @@ pub trait Tool: Send + Sync + 'static {
 
 pub trait DynTool: Send + Sync {
     fn name(&self) -> &str;
+    fn group(&self) -> ToolGroup;
     fn declaration(&self) -> GenaiTool;
     fn get_system_description(&self) -> &str;
     fn call_json<'a>(&'a self, args: Value) -> BoxedFuture<'a, Result<String, ToolError>>;
@@ -84,6 +90,10 @@ pub trait DynTool: Send + Sync {
 impl<T: Tool> DynTool for T {
     fn name(&self) -> &str {
         T::NAME
+    }
+
+    fn group(&self) -> ToolGroup {
+        T::GROUP
     }
 
     fn declaration(&self) -> GenaiTool {
@@ -149,9 +159,37 @@ impl ToolRouter {
         if self.index.contains_key(&name) {
             return Err(ToolRegisterError::Duplicate { name });
         }
-        self.tools.push(Arc::new(tool));
-        self.index.insert(name, self.tools.len() - 1);
+        self.push_arc(Arc::new(tool));
         Ok(self)
+    }
+
+    pub fn for_session(
+        &self,
+        allowed: &[ToolGroup],
+        reply: ReplyMode,
+        sender: Option<Arc<dyn ChannelSender>>,
+    ) -> ToolRouter {
+        let mut view = ToolRouter::new();
+
+        for tool in &self.tools {
+            if allowed.contains(&tool.group()) {
+                view.push_arc(tool.clone());
+            }
+        }
+
+        if reply == ReplyMode::MessageTool
+            && allowed.contains(&ToolGroup::Outbound)
+            && let Some(sender) = sender
+        {
+            let _ = view.register(MessageTool::new(sender));
+        }
+
+        view
+    }
+
+    fn push_arc(&mut self, tool: Arc<dyn DynTool>) {
+        self.index.insert(tool.name().to_string(), self.tools.len());
+        self.tools.push(tool);
     }
 
     pub fn names(&self) -> Vec<&str> {
@@ -207,5 +245,63 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
             max_chars
         ),
         None => line.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channel::sender::testing::MockChannelSender;
+
+    fn catalog() -> ToolRouter {
+        let mut router = ToolRouter::new();
+        router.register_builtin_tools().unwrap();
+        router
+    }
+
+    #[test]
+    fn a_plain_channel_view_excludes_the_message_tool() {
+        let view = catalog().for_session(
+            &[ToolGroup::File, ToolGroup::Exec, ToolGroup::Outbound],
+            ReplyMode::Automatic,
+            None,
+        );
+
+        assert_eq!(
+            view.names(),
+            vec!["read", "write", "edit", "glob", "grep", "bash"]
+        );
+    }
+
+    #[test]
+    fn a_message_tool_channel_gets_the_bound_message_tool() {
+        let view = catalog().for_session(
+            &[ToolGroup::File, ToolGroup::Exec, ToolGroup::Outbound],
+            ReplyMode::MessageTool,
+            Some(MockChannelSender::new()),
+        );
+
+        assert_eq!(
+            view.names(),
+            vec!["read", "write", "edit", "glob", "grep", "bash", "message"]
+        );
+    }
+
+    #[test]
+    fn a_member_view_only_gets_the_message_tool() {
+        let view = catalog().for_session(
+            &[ToolGroup::Outbound],
+            ReplyMode::MessageTool,
+            Some(MockChannelSender::new()),
+        );
+
+        assert_eq!(view.names(), vec!["message"]);
+    }
+
+    #[test]
+    fn an_automatic_outbound_only_view_is_empty() {
+        let view = catalog().for_session(&[ToolGroup::Outbound], ReplyMode::Automatic, None);
+
+        assert!(view.names().is_empty());
     }
 }

@@ -9,6 +9,7 @@ use serde_json::json;
 
 use anyhow::{Result, anyhow};
 
+use crate::permissions::ToolGroup;
 use crate::tools::MAX_LINE_LENGTH;
 
 use super::{Tool, truncate_line};
@@ -36,6 +37,7 @@ pub struct ReadTool;
 impl Tool for ReadTool {
     type Args = ReadToolArgs;
     const NAME: &'static str = "read";
+    const GROUP: ToolGroup = ToolGroup::File;
 
     fn description(&self) -> &str {
         "Read a UTF-8 text file and return line-numbered content."
@@ -202,6 +204,7 @@ pub struct WriteTool;
 impl Tool for WriteTool {
     type Args = WriteToolArgs;
     const NAME: &'static str = "write";
+    const GROUP: ToolGroup = ToolGroup::File;
 
     fn description(&self) -> &str {
         "Create or fully replace a UTF-8 text file."
@@ -282,6 +285,7 @@ pub struct EditTool;
 impl Tool for EditTool {
     type Args = EditToolArgs;
     const NAME: &'static str = "edit";
+    const GROUP: ToolGroup = ToolGroup::File;
 
     fn description(&self) -> &str {
         "Edit an existing UTF-8 text file by replacing literal text."

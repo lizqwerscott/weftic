@@ -58,12 +58,13 @@ impl SessionManager {
         engine: Arc<AgentEngine>,
         resolver: SessionResolver,
         agent_id: impl Into<String>,
+        event_store: EventStore,
     ) -> Self {
         Self {
             engine,
             resolver,
             sessions: HashMap::new(),
-            event_store: EventStore::new(),
+            event_store,
             agent_id: agent_id.into(),
         }
     }
@@ -77,13 +78,12 @@ impl SessionManager {
     ) -> Result<IngestOutcome> {
         let key = session_key_for(&event, &self.agent_id)?;
 
-        match self.event_store.append(event) {
+        match self.event_store.append(&event)? {
             AppendOutcome::Duplicate(event_id) => Ok(IngestOutcome::Duplicate { event_id }),
             AppendOutcome::Appended(event_id) => {
                 let stored = self
                     .event_store
-                    .get(event_id)
-                    .cloned()
+                    .get(event_id)?
                     .ok_or_else(|| anyhow!("event {event_id:?} vanished right after append"))?;
 
                 self.submit(
@@ -202,10 +202,12 @@ mod tests {
 
     use super::*;
     use crate::agent_engine::AgentEngine;
+    use crate::channel::registry::{ChannelRegistry, CliRuntime};
     use crate::channel::{Channel, DeliveryTarget};
     use crate::config::model_provider::testing::{ScriptedModel, text_events};
     use crate::config::system_prompt::SystemPromptConfig;
     use crate::event::{ActorRef, DedupKey};
+    use crate::permissions::Permissions;
     use crate::system_prompt::SystemPromptManager;
     use crate::tools::ToolRouter;
 
@@ -282,9 +284,18 @@ mod tests {
 
         let mut templates = HashMap::new();
         templates.insert(Channel::Cli, "agent".to_string());
-        let resolver = SessionResolver::new(PathBuf::from("/work"), templates);
 
-        SessionManager::new(engine, resolver, "main")
+        let mut registry = ChannelRegistry::new();
+        registry.register(Channel::Cli, Arc::new(CliRuntime));
+
+        let resolver = SessionResolver::new(
+            PathBuf::from("/work"),
+            templates,
+            Arc::new(registry),
+            Permissions::default(),
+        );
+
+        SessionManager::new(engine, resolver, "main", EventStore::in_memory().unwrap())
     }
 
     async fn enqueue(

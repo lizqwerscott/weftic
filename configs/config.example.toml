@@ -2,8 +2,20 @@
 [channels.cli]
 template = "agent"
 
+# Telegram (M2 只读接收;token 支持 <ENV_NAME> 占位符)
+# [channels.telegram]
+# template = "telegram"
+# token = "<TELEGRAM_BOT_TOKEN>"
+
 [engine]
 max_iterations = 100
+
+[storage]
+dir = "./data"
+
+[permissions]
+# Owner allowlist: `(channel, user id)` entries that get full permissions.
+# owner = ["telegram:123456"]
 
 [system_prompt]
 character_path = "./characters/default.md"
