@@ -115,7 +115,8 @@ mod tests {
     use super::*;
     use crate::channel::DeliveryTarget;
     use crate::channel::cli::CliRuntime;
-    use crate::channel::telegram::send::TelegramRuntime;
+    use crate::channel::telegram::client::TelegramClient;
+    use crate::channel::telegram::runtime::TelegramRuntime;
 
     fn resolver() -> SessionResolver {
         let mut channel_templates = HashMap::new();
@@ -126,7 +127,11 @@ mod tests {
         registry.register(Channel::Cli, Arc::new(CliRuntime));
         registry.register(
             Channel::Telegram,
-            Arc::new(TelegramRuntime::new("token", 3)),
+            Arc::new(TelegramRuntime::new(
+                Arc::new(TelegramClient::new("token")),
+                "default",
+                3,
+            )),
         );
 
         let permissions = Permissions {

@@ -1,15 +1,31 @@
-//! Per-channel runtime: capabilities plus a sender factory.
+//! Per-channel runtime: capabilities, sender factory, and inbound driver.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+
+use anyhow::Result;
 
 use crate::channel::capabilities::ChannelCapabilities;
 use crate::channel::sender::ChannelSender;
 use crate::channel::{Channel, DeliveryTarget};
+use crate::session::manager::SessionManager;
+
+pub trait InboundDriver: Send + Sync {
+    fn run<'a>(
+        &'a self,
+        manager: &'a mut SessionManager,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+}
 
 pub trait ChannelRuntime: Send + Sync {
     fn capabilities(&self) -> ChannelCapabilities;
     fn sender(&self, target: &DeliveryTarget) -> Option<Arc<dyn ChannelSender>>;
+
+    /// The inbound loop this channel wants driven, if it consumes messages.
+    fn inbound(&self) -> Option<Arc<dyn InboundDriver>> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -32,6 +48,13 @@ impl ChannelRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.runtimes.is_empty()
+    }
+
+    pub fn inbound_drivers(&self) -> Vec<Arc<dyn InboundDriver>> {
+        self.runtimes
+            .values()
+            .filter_map(|runtime| runtime.inbound())
+            .collect()
     }
 }
 

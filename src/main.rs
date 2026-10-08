@@ -5,15 +5,13 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use weftic::agent_engine::AgentEngine;
-use weftic::channel::telegram::poll::TelegramPoller;
 use weftic::config::{Config, model_provider::ChatModel};
 use weftic::event_store::EventStore;
-use weftic::output::{NullSink, OutputSink};
+use weftic::registry_channels;
 use weftic::session::manager::SessionManager;
 use weftic::session::resolver::SessionResolver;
 use weftic::system_prompt::SystemPromptManager;
 use weftic::tools::ToolRouter;
-use weftic::{ChannelSetup, setup_channels};
 
 /// Log to stderr, defaulting to `info`; override with `RUST_LOG`.
 fn init_logging() {
@@ -55,10 +53,7 @@ async fn main() -> Result<()> {
 
     let workspace_root = std::env::current_dir()?;
 
-    let ChannelSetup {
-        registry,
-        telegram_token,
-    } = setup_channels(&config)?;
+    let registry = registry_channels(&config)?;
 
     if registry.is_empty() {
         warn!(
@@ -70,21 +65,18 @@ async fn main() -> Result<()> {
     let resolver = SessionResolver::new(
         workspace_root,
         channel_templates,
-        registry,
+        registry.clone(),
         config.permissions.clone(),
     );
-    let manager = SessionManager::new(
+    let mut manager = SessionManager::new(
         engine,
         resolver,
         "main",
         EventStore::open(&config.storage.db_path())?,
     );
 
-    if let Some(token) = telegram_token {
-        info!(target: "telegram", "long-polling enabled (account `default`)");
-        let poller = TelegramPoller::new(token, "default");
-        let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
-        poller.run(manager, sink).await?;
+    for driver in registry.inbound_drivers() {
+        driver.run(&mut manager).await?;
     }
 
     Ok(())

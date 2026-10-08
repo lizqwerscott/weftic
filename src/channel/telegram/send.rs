@@ -2,56 +2,30 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
+use anyhow::{Result, anyhow};
+use serde_json::Value;
 
-use crate::channel::DeliveryTarget;
-use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
-use crate::channel::registry::ChannelRuntime;
 use crate::channel::sender::{BoxedSendFuture, ChannelSender, SentMessage};
-
-const API_BASE: &str = "https://api.telegram.org";
+use crate::channel::telegram::client::{Envelope, TelegramClient};
 
 pub struct TelegramSender {
-    client: reqwest::Client,
-    token: String,
+    client: Arc<TelegramClient>,
     chat_id: String,
     max_attempts: u32,
 }
 
 impl TelegramSender {
-    pub fn new(token: impl Into<String>, chat_id: impl Into<String>, max_attempts: u32) -> Self {
+    pub fn new(client: Arc<TelegramClient>, chat_id: impl Into<String>, max_attempts: u32) -> Self {
         Self {
-            client: reqwest::Client::new(),
-            token: token.into(),
+            client,
             chat_id: chat_id.into(),
             max_attempts: max_attempts.max(1),
         }
     }
 
-    fn url(&self, method: &str) -> String {
-        format!("{API_BASE}/bot{}/{}", self.token, method)
-    }
-
-    async fn post(&self, method: &str, body: &serde_json::Value) -> Result<String> {
-        self.client
-            .post(self.url(method))
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| anyhow!("calling telegram {method}: {}", error.without_url()))?
-            .text()
-            .await
-            .map_err(|error| {
-                anyhow!(
-                    "reading telegram {method} response: {}",
-                    error.without_url()
-                )
-            })
-    }
-
     async fn send_once(&self, text: &str) -> Result<SentMessage, AttemptError> {
         match self
+            .client
             .post("sendRichMessage", &rich_body(&self.chat_id, text))
             .await
         {
@@ -70,6 +44,7 @@ impl TelegramSender {
         }
 
         let response = self
+            .client
             .post("sendMessage", &plain_body(&self.chat_id, text))
             .await
             .map_err(AttemptError::transport)?;
@@ -80,7 +55,7 @@ impl TelegramSender {
 
     async fn edit_once(&self, message_id: &str, text: &str) -> Result<(), AttemptError> {
         let rich = rich_edit_body(&self.chat_id, message_id, text);
-        match self.post("editMessageText", &rich).await {
+        match self.client.post("editMessageText", &rich).await {
             Ok(response) => match parse_edited(&response) {
                 Ok(()) => {
                     tracing::info!(target: "telegram", "edited rich message {message_id}");
@@ -97,6 +72,7 @@ impl TelegramSender {
 
         let plain = plain_edit_body(&self.chat_id, message_id, text);
         let response = self
+            .client
             .post("editMessageText", &plain)
             .await
             .map_err(AttemptError::transport)?;
@@ -158,34 +134,6 @@ impl ChannelSender for TelegramSender {
     }
 }
 
-pub struct TelegramRuntime {
-    token: String,
-    max_attempts: u32,
-}
-
-impl TelegramRuntime {
-    pub fn new(token: impl Into<String>, max_attempts: u32) -> Self {
-        Self {
-            token: token.into(),
-            max_attempts,
-        }
-    }
-}
-
-impl ChannelRuntime for TelegramRuntime {
-    fn capabilities(&self) -> ChannelCapabilities {
-        ChannelCapabilities::new(StreamMode::Off, ReplyMode::MessageTool)
-    }
-
-    fn sender(&self, target: &DeliveryTarget) -> Option<Arc<dyn ChannelSender>> {
-        Some(Arc::new(TelegramSender::new(
-            self.token.clone(),
-            target.target_id(),
-            self.max_attempts,
-        )))
-    }
-}
-
 /// A failed delivery attempt: `retryable` marks transport-level failures (the
 /// request never got an answer), which are worth retrying.
 struct AttemptError {
@@ -235,50 +183,21 @@ fn plain_edit_body(chat_id: &str, message_id: &str, text: &str) -> serde_json::V
     serde_json::json!({ "chat_id": chat_id, "message_id": message_id, "text": text })
 }
 
-#[derive(Debug, Deserialize)]
-struct ApiResponse {
-    ok: bool,
-    description: Option<String>,
-    result: Option<serde_json::Value>,
-}
-
 fn parse_sent(body: &str) -> Result<SentMessage> {
-    let response: ApiResponse =
-        serde_json::from_str(body).context("decoding telegram sendMessage response")?;
-
-    if !response.ok {
-        return Err(anyhow!(
-            "telegram sendMessage failed: {}",
-            response
-                .description
-                .unwrap_or_else(|| "unknown error".to_string())
-        ));
-    }
-
-    let result = response
-        .result
+    let result = Envelope::<Value>::decode("sendMessage", body)?
+        .into_result("sendMessage")?
         .ok_or_else(|| anyhow!("telegram sendMessage returned no result"))?;
 
     let message_id = result
         .get("message_id")
-        .and_then(serde_json::Value::as_i64)
+        .and_then(Value::as_i64)
         .ok_or_else(|| anyhow!("telegram sendMessage response has no message_id"))?;
 
     Ok(SentMessage::new(message_id.to_string()))
 }
 
 fn parse_edited(body: &str) -> Result<()> {
-    let response: ApiResponse =
-        serde_json::from_str(body).context("decoding telegram editMessageText response")?;
-
-    if !response.ok {
-        return Err(anyhow!(
-            "telegram editMessageText failed: {}",
-            response
-                .description
-                .unwrap_or_else(|| "unknown error".to_string())
-        ));
-    }
+    Envelope::<Value>::decode("editMessageText", body)?.into_result("editMessageText")?;
 
     Ok(())
 }
@@ -286,7 +205,6 @@ fn parse_edited(body: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::Channel;
 
     #[test]
     fn parse_sent_reads_the_message_id() {
@@ -337,24 +255,6 @@ mod tests {
             error.to_string(),
             "telegram editMessageText failed: message to edit not found"
         );
-    }
-
-    #[test]
-    fn telegram_runtime_streams_off_and_delivers_via_the_message_tool() {
-        let runtime = TelegramRuntime::new("token", 3);
-
-        assert_eq!(
-            runtime.capabilities(),
-            ChannelCapabilities::new(StreamMode::Off, ReplyMode::MessageTool)
-        );
-    }
-
-    #[test]
-    fn telegram_runtime_has_a_sender_for_a_target() {
-        let runtime = TelegramRuntime::new("token", 3);
-        let target = DeliveryTarget::direct(Channel::Telegram, "default", "123456");
-
-        assert!(runtime.sender(&target).is_some());
     }
 
     #[test]

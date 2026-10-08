@@ -5,20 +5,20 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
+use anyhow::Result;
 use serde_json::Value;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
 use crate::channel::adapter::{ChannelAdapter, RawUpdate};
+use crate::channel::registry::InboundDriver;
 use crate::channel::telegram::TelegramAdapter;
+use crate::channel::telegram::client::{Envelope, TelegramClient};
 use crate::event::{Event, EventOrigin, Part};
-use crate::output::OutputSink;
+use crate::output::{NullSink, OutputSink};
 use crate::session::manager::{IngestOutcome, SessionManager};
 
-const API_BASE: &str = "https://api.telegram.org";
 /// Long-poll timeout handed to Telegram, in seconds.
 const POLL_TIMEOUT_SECS: u32 = 30;
 /// Backoff after a failed poll before trying again.
@@ -31,41 +31,28 @@ pub trait UpdateSource: Send + Sync {
 }
 
 pub struct TelegramUpdates {
-    client: reqwest::Client,
-    token: String,
+    client: Arc<TelegramClient>,
 }
 
 impl TelegramUpdates {
-    pub fn new(token: impl Into<String>) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            token: token.into(),
-        }
+    pub fn new(client: Arc<TelegramClient>) -> Self {
+        Self { client }
     }
 }
 
 impl UpdateSource for TelegramUpdates {
     fn get_updates(&self, offset: i32) -> BoxedUpdatesFuture<'_, Result<Vec<Value>>> {
         Box::pin(async move {
-            let url = format!(
-                "{API_BASE}/bot{}/getUpdates?offset={offset}&timeout={POLL_TIMEOUT_SECS}",
-                self.token
-            );
-
             let body = self
                 .client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|error| anyhow!("calling telegram getUpdates: {}", error.without_url()))?
-                .text()
-                .await
-                .map_err(|error| {
-                    anyhow!(
-                        "reading telegram getUpdates response: {}",
-                        error.without_url()
-                    )
-                })?;
+                .get(
+                    "getUpdates",
+                    &[
+                        ("offset", offset.to_string()),
+                        ("timeout", POLL_TIMEOUT_SECS.to_string()),
+                    ],
+                )
+                .await?;
 
             parse_updates(&body)
         })
@@ -78,8 +65,8 @@ pub struct TelegramPoller {
 }
 
 impl TelegramPoller {
-    pub fn new(token: impl Into<String>, account_id: impl Into<String>) -> Self {
-        Self::with_source(Arc::new(TelegramUpdates::new(token)), account_id)
+    pub fn new(client: Arc<TelegramClient>, account_id: impl Into<String>) -> Self {
+        Self::with_source(Arc::new(TelegramUpdates::new(client)), account_id)
     }
 
     pub fn with_source(source: Arc<dyn UpdateSource>, account_id: impl Into<String>) -> Self {
@@ -113,27 +100,35 @@ impl TelegramPoller {
         let next = next_offset(&updates, offset);
         Ok((next, self.normalize_batch(&updates)))
     }
+}
 
-    pub async fn run(self, mut manager: SessionManager, sink: Arc<dyn OutputSink>) -> Result<()> {
-        let mut offset: i32 = 0;
+impl InboundDriver for TelegramPoller {
+    fn run<'a>(
+        &'a self,
+        manager: &'a mut SessionManager,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut offset: i32 = 0;
+            let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
 
-        info!(target: "telegram", "poller started");
+            info!(target: "telegram", "poller started");
 
-        loop {
-            match self.poll_once(offset).await {
-                Ok((next, events)) => {
-                    offset = next;
-                    for event in events {
-                        info!(target: "telegram", "received {}", summarize(&event));
-                        deliver(&mut manager, event, &sink).await;
+            loop {
+                match self.poll_once(offset).await {
+                    Ok((next, events)) => {
+                        offset = next;
+                        for event in events {
+                            info!(target: "telegram", "received {}", summarize(&event));
+                            deliver(&mut *manager, event, &sink).await;
+                        }
+                    }
+                    Err(error) => {
+                        warn!(target: "telegram", "poll failed: {error:#}");
+                        tokio::time::sleep(ERROR_BACKOFF).await;
                     }
                 }
-                Err(error) => {
-                    warn!(target: "telegram", "poll failed: {error:#}");
-                    tokio::time::sleep(ERROR_BACKOFF).await;
-                }
             }
-        }
+        })
     }
 }
 
@@ -195,26 +190,9 @@ fn update_id(update: &Value) -> Option<i64> {
 }
 
 fn parse_updates(body: &str) -> Result<Vec<Value>> {
-    let response: UpdatesResponse =
-        serde_json::from_str(body).context("decoding telegram getUpdates response")?;
+    let result = Envelope::<Vec<Value>>::decode("getUpdates", body)?.into_result("getUpdates")?;
 
-    if !response.ok {
-        return Err(anyhow!(
-            "telegram getUpdates failed: {}",
-            response
-                .description
-                .unwrap_or_else(|| "unknown error".to_string())
-        ));
-    }
-
-    Ok(response.result.unwrap_or_default())
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdatesResponse {
-    ok: bool,
-    result: Option<Vec<Value>>,
-    description: Option<String>,
+    Ok(result.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -261,6 +239,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    use anyhow::anyhow;
     use serde_json::json;
 
     use super::testing::ScriptedUpdates;

@@ -1,6 +1,8 @@
 //! Telegram inbound normalization: a raw Telegram update JSON becomes an `Event`.
 
+pub mod client;
 pub mod poll;
+pub mod runtime;
 pub mod send;
 
 use serde::Deserialize;

@@ -5,7 +5,10 @@ use tracing::{info, warn};
 
 use crate::{
     channel::{
-        Channel, cli::CliRuntime, registry::ChannelRegistry, telegram::send::TelegramRuntime,
+        Channel,
+        cli::CliRuntime,
+        registry::ChannelRegistry,
+        telegram::{client::TelegramClient, runtime::TelegramRuntime},
     },
     config::{Config, channel::DEFAULT_MAX_SEND_ATTEMPTS},
 };
@@ -24,16 +27,8 @@ pub mod system_prompt;
 pub mod tools;
 pub mod tui;
 
-/// The channels resolved from config: the registry plus the telegram token that
-/// was actually registered.
-pub struct ChannelSetup {
-    pub registry: Arc<ChannelRegistry>,
-    pub telegram_token: Option<String>,
-}
-
-pub fn setup_channels(config: &Config) -> Result<ChannelSetup> {
+pub fn registry_channels(config: &Config) -> Result<Arc<ChannelRegistry>> {
     let mut registry = ChannelRegistry::new();
-    let mut telegram_token = None;
 
     if config.is_channel_enabled("cli") {
         registry.register(Channel::Cli, Arc::new(CliRuntime));
@@ -47,19 +42,16 @@ pub fn setup_channels(config: &Config) -> Result<ChannelSetup> {
                 .get("telegram")
                 .map(|channel| channel.max_send_attempts)
                 .unwrap_or(DEFAULT_MAX_SEND_ATTEMPTS);
+            let client = Arc::new(TelegramClient::new(token));
             registry.register(
                 Channel::Telegram,
-                Arc::new(TelegramRuntime::new(token.clone(), attempts)),
+                Arc::new(TelegramRuntime::new(client, "default", attempts)),
             );
             info!(target: "telegram", "channel registered (account `default`)");
-            telegram_token = Some(token);
         } else {
             warn!(target: "telegram", "channel enabled but no token configured; skipping");
         }
     }
 
-    Ok(ChannelSetup {
-        registry: Arc::new(registry),
-        telegram_token,
-    })
+    Ok(Arc::new(registry))
 }
