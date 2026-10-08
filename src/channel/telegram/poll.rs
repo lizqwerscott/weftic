@@ -103,10 +103,10 @@ impl TelegramPoller {
 }
 
 impl InboundDriver for TelegramPoller {
-    fn run<'a>(
-        &'a self,
-        manager: &'a mut SessionManager,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn run(
+        self: Arc<Self>,
+        manager: Arc<SessionManager>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>> {
         Box::pin(async move {
             let mut offset: i32 = 0;
             let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
@@ -119,7 +119,7 @@ impl InboundDriver for TelegramPoller {
                         offset = next;
                         for event in events {
                             info!(target: "telegram", "received {}", summarize(&event));
-                            deliver(&mut *manager, event, &sink).await;
+                            deliver(&manager, event, &sink).await;
                         }
                     }
                     Err(error) => {
@@ -132,7 +132,7 @@ impl InboundDriver for TelegramPoller {
     }
 }
 
-async fn deliver(manager: &mut SessionManager, event: Event, sink: &Arc<dyn OutputSink>) {
+async fn deliver(manager: &SessionManager, event: Event, sink: &Arc<dyn OutputSink>) {
     let (reply, reply_rx) = oneshot::channel();
 
     match manager.ingest(event, sink.clone(), reply).await {
@@ -452,14 +452,14 @@ mod tests {
             text_events("done"),
         ]);
         let sender = MockChannelSender::new();
-        let mut manager = telegram_manager(model, sender.clone()).await;
+        let manager = telegram_manager(model, sender.clone()).await;
 
         let (poller, _) = poller(vec![Ok(vec![private_text_update()])]);
         let (_, events) = poller.poll_once(0).await.unwrap();
         let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
 
         for event in events {
-            deliver(&mut manager, event, &sink).await;
+            deliver(&manager, event, &sink).await;
         }
 
         assert_eq!(
@@ -482,7 +482,7 @@ mod tests {
             text_events("done"),
         ]);
         let sender = MockChannelSender::new();
-        let mut manager = telegram_manager(model.clone(), sender.clone()).await;
+        let manager = telegram_manager(model.clone(), sender.clone()).await;
 
         let (poller, _) = poller(vec![
             Ok(vec![private_text_update()]),
@@ -493,7 +493,7 @@ mod tests {
         for _ in 0..2 {
             let (_, events) = poller.poll_once(0).await.unwrap();
             for event in events {
-                deliver(&mut manager, event, &sink).await;
+                deliver(&manager, event, &sink).await;
             }
         }
 
@@ -505,14 +505,14 @@ mod tests {
     async fn a_text_only_reply_is_delivered_by_the_fallback() {
         let model = ScriptedModel::text_reply("hi back");
         let sender = MockChannelSender::new();
-        let mut manager = telegram_manager(model, sender.clone()).await;
+        let manager = telegram_manager(model, sender.clone()).await;
 
         let (poller, _) = poller(vec![Ok(vec![private_text_update()])]);
         let (_, events) = poller.poll_once(0).await.unwrap();
         let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
 
         for event in events {
-            deliver(&mut manager, event, &sink).await;
+            deliver(&manager, event, &sink).await;
         }
 
         assert_eq!(

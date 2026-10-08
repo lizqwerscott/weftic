@@ -12,10 +12,12 @@ use crate::channel::{Channel, DeliveryTarget};
 use crate::session::manager::SessionManager;
 
 pub trait InboundDriver: Send + Sync {
-    fn run<'a>(
-        &'a self,
-        manager: &'a mut SessionManager,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+    /// Drive this channel's inbound loop. Taking `self: Arc<Self>` lets the
+    /// returned future be `'static`, so each driver can run on its own task.
+    fn run(
+        self: Arc<Self>,
+        manager: Arc<SessionManager>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 }
 
 pub trait ChannelRuntime: Send + Sync {

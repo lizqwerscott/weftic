@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -69,11 +70,44 @@ async fn main() -> Result<()> {
         config.permissions.clone(),
     );
     let database = Arc::new(Database::new(config.storage.db_path()).await?);
-    let mut manager = SessionManager::new(engine, resolver, "main", database);
+    let manager = Arc::new(SessionManager::new(
+        engine,
+        resolver,
+        "main",
+        database.clone(),
+    ));
 
+    // Each channel's inbound loop gets its own task, so one slow channel can't
+    // stall the others.
+    let mut drivers = JoinSet::new();
     for driver in registry.inbound_drivers() {
-        driver.run(&mut manager).await?;
+        let manager = manager.clone();
+        drivers.spawn(async move { driver.run(manager).await });
     }
 
-    Ok(())
+    let outcome = tokio::select! {
+        // Fail fast: a channel driver stopping on its own is not a normal exit
+        // (the gateway is meant to run forever), so it fails the whole process.
+        result = async {
+            match drivers.join_next().await {
+                Some(Ok(Ok(()))) => Err(anyhow::anyhow!("a channel driver exited unexpectedly")),
+                Some(Ok(Err(error))) => Err(error),
+                Some(Err(join_error)) => Err(anyhow::Error::new(join_error)),
+                None => Ok(()),
+            }
+        } => result,
+        _ = tokio::signal::ctrl_c() => {
+            info!("shutdown signal received; stopping channels");
+            Ok::<(), anyhow::Error>(())
+        }
+    };
+
+    info!("stopping channels");
+    drivers.shutdown().await;
+    info!("draining in-flight turns");
+    manager.shutdown().await;
+    info!("closing database");
+    database.close();
+
+    outcome
 }

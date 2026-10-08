@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use genai::chat::ChatMessage;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::agent_engine::AgentEngine;
 use crate::channel::SessionKey;
@@ -17,6 +19,8 @@ use crate::session::history::TurnStatus;
 use crate::session::resolver::SessionResolver;
 
 const SESSION_QUEUE: usize = 16;
+/// Upper bound on how long shutdown waits for queued turns to finish.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub enum SessionInput {
     Turn {
@@ -46,12 +50,18 @@ impl SessionHandle {
     }
 }
 
+/// A routed session: the cloneable submit handle plus the task that owns it.
+struct SessionEntry {
+    handle: SessionHandle,
+    task: JoinHandle<()>,
+}
+
 /// Shared routing state. Every field is either immutable or internally locked,
-/// so the manager can be called concurrently (`&self`).
+/// so the manager can be called concurrently from many drivers (`&self`).
 pub struct SessionManager {
     engine: Arc<AgentEngine>,
     resolver: SessionResolver,
-    sessions: Mutex<HashMap<SessionKey, SessionHandle>>,
+    sessions: Mutex<HashMap<SessionKey, SessionEntry>>,
     database: Arc<Database>,
     agent_id: String,
 }
@@ -114,13 +124,16 @@ impl SessionManager {
             .expect("session registry mutex poisoned");
 
         match sessions.entry(key.clone()) {
-            Entry::Occupied(existing) => Ok(existing.get().clone()),
+            Entry::Occupied(existing) => Ok(existing.get().handle.clone()),
             Entry::Vacant(vacant) => {
                 let session = Session::new(self.resolver.spec_for(key)?);
                 let (tx, rx) = mpsc::channel(SESSION_QUEUE);
-                tokio::spawn(run_session(self.engine.clone(), session, rx));
+                let task = tokio::spawn(run_session(self.engine.clone(), session, rx));
                 let handle = SessionHandle { tx };
-                vacant.insert(handle.clone());
+                vacant.insert(SessionEntry {
+                    handle: handle.clone(),
+                    task,
+                });
                 Ok(handle)
             }
         }
@@ -129,6 +142,33 @@ impl SessionManager {
     async fn submit(&self, key: &SessionKey, input: SessionInput) -> Result<()> {
         let handle = self.ensure(key)?;
         handle.submit(input).await
+    }
+
+    /// Stop accepting input and wait for every session task to finish the turns
+    /// already queued. Draining the map drops each `SessionHandle`, closing its
+    /// channel, so a `run_session` loop exits once its queue is empty.
+    ///
+    /// Call this only after the drivers have stopped, otherwise a concurrent
+    /// `submit` could still be holding a sender when the map is drained.
+    pub async fn shutdown(&self) {
+        let tasks: Vec<JoinHandle<()>> = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .expect("session registry mutex poisoned");
+            sessions.drain().map(|(_, entry)| entry.task).collect()
+        };
+
+        for mut task in tasks {
+            match tokio::time::timeout(DRAIN_TIMEOUT, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!("session task failed: {error}"),
+                Err(_) => {
+                    tracing::warn!("session task did not drain within {DRAIN_TIMEOUT:?}; aborting");
+                    task.abort();
+                }
+            }
+        }
     }
 }
 
@@ -409,5 +449,18 @@ mod tests {
             }
         );
         assert_eq!(model.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_a_queued_turn_before_returning() {
+        let model = ScriptedModel::text_reply("hello back");
+        let manager = session_manager(model.clone()).await;
+
+        let (reply, sink) = enqueue(&manager, event("hello")).await;
+
+        manager.shutdown().await;
+
+        assert!(reply.await.unwrap().is_ok());
+        assert_eq!(sink.content(), "hello back");
     }
 }
