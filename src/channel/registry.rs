@@ -59,6 +59,49 @@ impl ChannelRegistry {
 }
 
 #[cfg(test)]
+pub mod testing {
+    use super::*;
+    use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
+    use crate::channel::sender::ChannelSender;
+
+    /// A stand-in channel runtime for tests: the second implementation that
+    /// keeps the `ChannelRuntime` abstraction honest now that the CLI is gone.
+    pub struct MockRuntime {
+        capabilities: ChannelCapabilities,
+        sender: Option<Arc<dyn ChannelSender>>,
+    }
+
+    impl MockRuntime {
+        /// The `Automatic` + `InPlace` profile with no outbound sender — what a
+        /// local/live channel (WebUI) will look like.
+        pub fn live() -> Arc<Self> {
+            Arc::new(Self {
+                capabilities: ChannelCapabilities::new(StreamMode::InPlace, ReplyMode::Automatic),
+                sender: None,
+            })
+        }
+
+        /// A `MessageTool` profile that delivers through the given sender.
+        pub fn outbound(sender: Arc<dyn ChannelSender>) -> Arc<Self> {
+            Arc::new(Self {
+                capabilities: ChannelCapabilities::new(StreamMode::Off, ReplyMode::MessageTool),
+                sender: Some(sender),
+            })
+        }
+    }
+
+    impl ChannelRuntime for MockRuntime {
+        fn capabilities(&self) -> ChannelCapabilities {
+            self.capabilities
+        }
+
+        fn sender(&self, _target: &DeliveryTarget) -> Option<Arc<dyn ChannelSender>> {
+            self.sender.clone()
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

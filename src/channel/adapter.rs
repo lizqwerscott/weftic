@@ -90,8 +90,8 @@ mod tests {
 
     fn text_event(target: &str, text: &str) -> Event {
         Event::platform_text(
-            DeliveryTarget::direct(Channel::Cli, "default", target),
-            ActorRef::new("member_cli"),
+            DeliveryTarget::direct(Channel::Webui, "default", target),
+            ActorRef::new("member_webui"),
             text,
         )
     }
@@ -130,10 +130,10 @@ mod tests {
 
     #[test]
     fn mock_returns_scripted_events_and_records_the_input() {
-        let events = vec![text_event("cli", "one"), text_event("cli", "two")];
+        let events = vec![text_event("webui", "one"), text_event("webui", "two")];
         let adapter = MockChannelAdapter::new(vec![Ok(events.clone())]);
 
-        let raw = RawUpdate::new(Channel::Cli, json!({"text": "one"}));
+        let raw = RawUpdate::new(Channel::Webui, json!({"text": "one"}));
         let produced = adapter.normalize(&raw).unwrap();
 
         assert_eq!(produced, events);
@@ -143,19 +143,19 @@ mod tests {
     #[test]
     fn mock_returns_results_in_scripted_order() {
         let adapter = MockChannelAdapter::new(vec![
-            Ok(vec![text_event("cli", "first")]),
-            Ok(vec![text_event("cli", "second")]),
+            Ok(vec![text_event("webui", "first")]),
+            Ok(vec![text_event("webui", "second")]),
         ]);
 
         let first = adapter
-            .normalize(&RawUpdate::new(Channel::Cli, json!({})))
+            .normalize(&RawUpdate::new(Channel::Webui, json!({})))
             .unwrap();
         let second = adapter
-            .normalize(&RawUpdate::new(Channel::Cli, json!({})))
+            .normalize(&RawUpdate::new(Channel::Webui, json!({})))
             .unwrap();
 
-        assert_eq!(first, vec![text_event("cli", "first")]);
-        assert_eq!(second, vec![text_event("cli", "second")]);
+        assert_eq!(first, vec![text_event("webui", "first")]);
+        assert_eq!(second, vec![text_event("webui", "second")]);
     }
 
     #[test]

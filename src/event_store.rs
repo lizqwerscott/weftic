@@ -206,8 +206,8 @@ mod tests {
 
     fn message(text: &str) -> Event {
         Event::platform_text(
-            DeliveryTarget::direct(Channel::Cli, "default", "cli"),
-            ActorRef::new("member_cli"),
+            DeliveryTarget::direct(Channel::Webui, "default", "webui"),
+            ActorRef::new("member_webui"),
             text,
         )
     }

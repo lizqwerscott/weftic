@@ -6,7 +6,6 @@ use tracing::{info, warn};
 use crate::{
     channel::{
         Channel,
-        cli::CliRuntime,
         registry::ChannelRegistry,
         telegram::{client::TelegramClient, runtime::TelegramRuntime},
     },
@@ -25,15 +24,9 @@ pub mod permissions;
 pub mod session;
 pub mod system_prompt;
 pub mod tools;
-pub mod tui;
 
 pub fn registry_channels(config: &Config) -> Result<Arc<ChannelRegistry>> {
     let mut registry = ChannelRegistry::new();
-
-    if config.is_channel_enabled("cli") {
-        registry.register(Channel::Cli, Arc::new(CliRuntime));
-        info!(target: "cli", "channel registered");
-    }
 
     if config.is_channel_enabled("telegram") {
         if let Some(token) = config.channel_token("telegram")? {

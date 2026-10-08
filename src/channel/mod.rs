@@ -12,7 +12,6 @@ const KEY_FIELD_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
 
 pub mod adapter;
 pub mod capabilities;
-pub mod cli;
 pub mod registry;
 pub mod sender;
 pub mod telegram;
@@ -44,7 +43,6 @@ impl ChannelChatType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Channel {
-    Cli,
     Webui,
     Telegram,
     QQ,
@@ -53,7 +51,6 @@ pub enum Channel {
 impl fmt::Display for Channel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Cli => write!(f, "cli"),
             Self::QQ => write!(f, "qq"),
             Self::Telegram => write!(f, "telegram"),
             Self::Webui => write!(f, "webui"),
@@ -64,7 +61,6 @@ impl fmt::Display for Channel {
 impl Channel {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "cli" => Some(Self::Cli),
             "webui" => Some(Self::Webui),
             "telegram" => Some(Self::Telegram),
             "qq" => Some(Self::QQ),
@@ -195,12 +191,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cli_direct_key_is_canonical() {
-        let key = DeliveryTarget::direct(Channel::Cli, "default", "cli").to_session_key("main");
-        assert_eq!(key.as_str(), "agent:main:cli:default:direct:cli");
-    }
-
-    #[test]
     fn webui_direct_key_is_canonical() {
         let key =
             DeliveryTarget::direct(Channel::Webui, "default", "lizqwer").to_session_key("main");
@@ -230,8 +220,9 @@ mod tests {
 
     #[test]
     fn session_key_displays_its_canonical_form() {
-        let key = DeliveryTarget::direct(Channel::Cli, "default", "cli").to_session_key("main");
-        assert_eq!(key.to_string(), "agent:main:cli:default:direct:cli");
+        let key =
+            DeliveryTarget::direct(Channel::Webui, "default", "lizqwer").to_session_key("main");
+        assert_eq!(key.to_string(), "agent:main:webui:default:direct:lizqwer");
     }
 
     #[test]
@@ -256,19 +247,19 @@ mod tests {
 
     #[test]
     fn parse_rejects_a_missing_agent_prefix() {
-        let key = SessionKey::from("main:cli:default:direct:cli");
+        let key = SessionKey::from("main:webui:default:direct:webui");
         assert_eq!(key.parse(), None);
     }
 
     #[test]
     fn parse_rejects_a_missing_segment() {
-        let key = SessionKey::from("agent:main:cli:default:direct");
+        let key = SessionKey::from("agent:main:webui:default:direct");
         assert_eq!(key.parse(), None);
     }
 
     #[test]
     fn parse_rejects_a_trailing_segment() {
-        let key = SessionKey::from("agent:main:cli:default:direct:cli:extra");
+        let key = SessionKey::from("agent:main:webui:default:direct:webui:extra");
         assert_eq!(key.parse(), None);
     }
 
@@ -280,13 +271,13 @@ mod tests {
 
     #[test]
     fn parse_rejects_an_unknown_chat_type() {
-        let key = SessionKey::from("agent:main:cli:default:channel:1");
+        let key = SessionKey::from("agent:main:webui:default:channel:1");
         assert_eq!(key.parse(), None);
     }
 
     #[test]
     fn parse_rejects_invalid_percent_encoding() {
-        let key = SessionKey::from("agent:main:cli:default:direct:%FF");
+        let key = SessionKey::from("agent:main:webui:default:direct:%FF");
         assert_eq!(key.parse(), None);
     }
 }

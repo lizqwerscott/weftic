@@ -92,7 +92,7 @@ impl SessionResolver {
 
     fn role_for(&self, target: &DeliveryTarget) -> Role {
         match target.channel() {
-            Channel::Cli | Channel::Webui => Role::Owner,
+            Channel::Webui => Role::Owner,
             _ => match target.chat_type() {
                 ChannelChatType::Group => Role::Member,
                 ChannelChatType::Direct => {
@@ -114,17 +114,17 @@ impl SessionResolver {
 mod tests {
     use super::*;
     use crate::channel::DeliveryTarget;
-    use crate::channel::cli::CliRuntime;
+    use crate::channel::registry::testing::MockRuntime;
     use crate::channel::telegram::client::TelegramClient;
     use crate::channel::telegram::runtime::TelegramRuntime;
 
     fn resolver() -> SessionResolver {
         let mut channel_templates = HashMap::new();
-        channel_templates.insert(Channel::Cli, "agent".to_string());
+        channel_templates.insert(Channel::Webui, "agent".to_string());
         channel_templates.insert(Channel::Telegram, "telegram".to_string());
 
         let mut registry = ChannelRegistry::new();
-        registry.register(Channel::Cli, Arc::new(CliRuntime));
+        registry.register(Channel::Webui, MockRuntime::live());
         registry.register(
             Channel::Telegram,
             Arc::new(TelegramRuntime::new(
@@ -147,8 +147,9 @@ mod tests {
     }
 
     #[test]
-    fn cli_spec_is_owner_agent_with_automatic_replies() {
-        let key = DeliveryTarget::direct(Channel::Cli, "default", "cli").to_session_key("main");
+    fn webui_spec_is_owner_agent_with_automatic_replies() {
+        let key =
+            DeliveryTarget::direct(Channel::Webui, "default", "lizqwer").to_session_key("main");
 
         let spec = resolver().spec_for(&key).unwrap();
 

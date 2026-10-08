@@ -237,12 +237,12 @@ impl Timestamp {
 mod tests {
     use super::*;
 
-    fn cli_message(text: &str) -> Event {
+    fn local_message(text: &str) -> Event {
         Event {
             delivery: Delivery::Durable,
             origin: EventOrigin::Platform(Box::new(PlatformEvent {
                 kind: PlatformKind::Message,
-                target: DeliveryTarget::direct(Channel::Cli, "default", "cli"),
+                target: DeliveryTarget::direct(Channel::Webui, "default", "webui"),
                 envelope: Envelope {
                     sender: ActorRef::new("member_0a1b"),
                     sender_name: None,
@@ -266,18 +266,18 @@ mod tests {
     }
 
     #[test]
-    fn cli_text_message_carries_its_facts() {
-        let event = cli_message("hi");
+    fn local_text_message_carries_its_facts() {
+        let event = local_message("hi");
         assert_eq!(event.delivery, Delivery::Durable);
 
         let EventOrigin::Platform(platform) = event.origin else {
-            panic!("CLI input must be a platform event");
+            panic!("local input must be a platform event");
         };
 
         assert_eq!(platform.kind, PlatformKind::Message);
         assert_eq!(
             platform.target,
-            DeliveryTarget::direct(Channel::Cli, "default", "cli")
+            DeliveryTarget::direct(Channel::Webui, "default", "webui")
         );
         assert_eq!(
             platform.parts,

@@ -202,8 +202,8 @@ mod tests {
 
     use super::*;
     use crate::agent_engine::AgentEngine;
-    use crate::channel::cli::CliRuntime;
     use crate::channel::registry::ChannelRegistry;
+    use crate::channel::registry::testing::MockRuntime;
     use crate::channel::{Channel, DeliveryTarget};
     use crate::config::model_provider::testing::{ScriptedModel, text_events};
     use crate::config::system_prompt::SystemPromptConfig;
@@ -212,7 +212,7 @@ mod tests {
     use crate::system_prompt::SystemPromptManager;
     use crate::tools::ToolRouter;
 
-    const CLI_SENDER: &str = "member_cli";
+    const LOCAL_SENDER: &str = "member_local";
 
     #[derive(Default)]
     struct RecordingSink {
@@ -242,14 +242,14 @@ mod tests {
 
     fn event_to(target: &str, text: &str) -> Event {
         Event::platform_text(
-            DeliveryTarget::direct(Channel::Cli, "default", target),
-            ActorRef::new(CLI_SENDER),
+            DeliveryTarget::direct(Channel::Webui, "default", target),
+            ActorRef::new(LOCAL_SENDER),
             text,
         )
     }
 
     fn event(text: &str) -> Event {
-        event_to("cli", text)
+        event_to("webui", text)
     }
 
     fn replayed_event(text: &str, platform_event_id: &str) -> Event {
@@ -259,7 +259,7 @@ mod tests {
             panic!("helper must build a platform event");
         };
         platform.dedup = Some(DedupKey {
-            platform: Channel::Cli,
+            platform: Channel::Webui,
             platform_event_id: platform_event_id.to_string(),
         });
 
@@ -284,10 +284,10 @@ mod tests {
         ));
 
         let mut templates = HashMap::new();
-        templates.insert(Channel::Cli, "agent".to_string());
+        templates.insert(Channel::Webui, "agent".to_string());
 
         let mut registry = ChannelRegistry::new();
-        registry.register(Channel::Cli, Arc::new(CliRuntime));
+        registry.register(Channel::Webui, MockRuntime::live());
 
         let resolver = SessionResolver::new(
             PathBuf::from("/work"),

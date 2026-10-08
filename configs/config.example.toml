@@ -1,7 +1,4 @@
 
-[channels.cli]
-template = "agent"
-
 # Telegram(token 支持 <ENV_NAME> 占位符)
 [channels.telegram]
 enabled = true

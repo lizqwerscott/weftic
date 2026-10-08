@@ -272,10 +272,10 @@ mod tests {
 
     #[test]
     fn render_error_renders_its_message() {
-        let error = TurnStartError::Render("template `cli` not found".to_string());
+        let error = TurnStartError::Render("template `webui` not found".to_string());
         assert_eq!(
             error.to_string(),
-            "system prompt render failed: template `cli` not found"
+            "system prompt render failed: template `webui` not found"
         );
     }
 }
