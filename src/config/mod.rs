@@ -88,10 +88,16 @@ impl Config {
             .collect()
     }
 
-    /// The Telegram bot token, if the `[channels.telegram]` entry carries one.
-    /// A `<ENV_NAME>` value is resolved from the environment.
-    pub fn telegram_token(&self) -> Result<Option<String>> {
-        let Some(channel) = self.channels.get("telegram") else {
+    pub fn is_channel_enabled(&self, name: &str) -> bool {
+        let Some(channel) = self.channels.get(name) else {
+            return false;
+        };
+
+        channel.enabled
+    }
+
+    pub fn channel_token(&self, name: &str) -> Result<Option<String>> {
+        let Some(channel) = self.channels.get(name) else {
             return Ok(None);
         };
 

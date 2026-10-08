@@ -202,7 +202,8 @@ mod tests {
 
     use super::*;
     use crate::agent_engine::AgentEngine;
-    use crate::channel::registry::{ChannelRegistry, CliRuntime};
+    use crate::channel::cli::CliRuntime;
+    use crate::channel::registry::ChannelRegistry;
     use crate::channel::{Channel, DeliveryTarget};
     use crate::config::model_provider::testing::{ScriptedModel, text_events};
     use crate::config::system_prompt::SystemPromptConfig;

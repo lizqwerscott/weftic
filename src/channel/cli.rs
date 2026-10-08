@@ -5,6 +5,9 @@ use colored::Colorize;
 use rustyline::error::ReadlineError;
 use tokio::sync::oneshot;
 
+use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
+use crate::channel::registry::ChannelRuntime;
+use crate::channel::sender::ChannelSender;
 use crate::channel::{Channel, DeliveryTarget};
 use crate::event::{ActorRef, Event};
 use crate::output::OutputSink;
@@ -75,10 +78,48 @@ impl Default for CliChannel {
     }
 }
 
+pub struct CliRuntime;
+
+impl ChannelRuntime for CliRuntime {
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities::new(StreamMode::InPlace, ReplyMode::Automatic)
+    }
+
+    fn sender(&self, _target: &DeliveryTarget) -> Option<Arc<dyn ChannelSender>> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::registry::ChannelRegistry;
     use crate::event::{EventOrigin, Part, PlatformKind};
+
+    fn cli_target() -> DeliveryTarget {
+        DeliveryTarget::direct(Channel::Cli, "default", "cli")
+    }
+
+    #[test]
+    fn cli_runtime_streams_in_place_and_has_no_sender() {
+        let runtime = CliRuntime;
+
+        assert_eq!(
+            runtime.capabilities(),
+            ChannelCapabilities::new(StreamMode::InPlace, ReplyMode::Automatic)
+        );
+        assert!(runtime.sender(&cli_target()).is_none());
+    }
+
+    #[test]
+    fn a_registered_cli_runtime_can_be_looked_up() {
+        let mut registry = ChannelRegistry::new();
+        registry.register(Channel::Cli, Arc::new(CliRuntime));
+
+        let runtime = registry.runtime(Channel::Cli).unwrap();
+
+        assert_eq!(runtime.capabilities().reply, ReplyMode::Automatic);
+    }
 
     #[test]
     fn event_is_a_cli_platform_text_message() {

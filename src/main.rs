@@ -1,16 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use weftic::agent_engine::AgentEngine;
-use weftic::channel::Channel;
-use weftic::channel::cli::CliChannel;
-use weftic::channel::registry::{ChannelRegistry, CliRuntime};
 use weftic::channel::telegram::poll::TelegramPoller;
-use weftic::channel::telegram::send::TelegramRuntime;
-use weftic::config::channel::DEFAULT_MAX_SEND_ATTEMPTS;
 use weftic::config::{Config, model_provider::ChatModel};
 use weftic::event_store::EventStore;
 use weftic::output::{NullSink, OutputSink};
@@ -18,6 +13,7 @@ use weftic::session::manager::SessionManager;
 use weftic::session::resolver::SessionResolver;
 use weftic::system_prompt::SystemPromptManager;
 use weftic::tools::ToolRouter;
+use weftic::{ChannelSetup, setup_channels};
 
 /// Log to stderr, defaulting to `info`; override with `RUST_LOG`.
 fn init_logging() {
@@ -59,22 +55,17 @@ async fn main() -> Result<()> {
 
     let workspace_root = std::env::current_dir()?;
 
-    let telegram_token = config.telegram_token()?;
+    let ChannelSetup {
+        registry,
+        telegram_token,
+    } = setup_channels(&config)?;
 
-    let mut registry = ChannelRegistry::new();
-    registry.register(Channel::Cli, Arc::new(CliRuntime));
-    if let Some(token) = &telegram_token {
-        let attempts = config
-            .channels
-            .get("telegram")
-            .map(|channel| channel.max_send_attempts)
-            .unwrap_or(DEFAULT_MAX_SEND_ATTEMPTS);
-        registry.register(
-            Channel::Telegram,
-            Arc::new(TelegramRuntime::new(token.clone(), attempts)),
+    if registry.is_empty() {
+        warn!(
+            "no channel is running; nothing to do (enable one with `enabled = true` under [channels.*])"
         );
+        return Ok(());
     }
-    let registry = Arc::new(registry);
 
     let resolver = SessionResolver::new(
         workspace_root,
@@ -82,24 +73,19 @@ async fn main() -> Result<()> {
         registry,
         config.permissions.clone(),
     );
-    let mut manager = SessionManager::new(
+    let manager = SessionManager::new(
         engine,
         resolver,
         "main",
         EventStore::open(&config.storage.db_path())?,
     );
 
-    // Telegram is the frontend for now; the CLI scaffold is paused.
-    match telegram_token {
-        Some(token) => {
-            info!(target: "telegram", "long-polling enabled (account `default`)");
-            let poller = TelegramPoller::new(token, "default");
-            let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
-            poller.run(manager, sink).await
-        }
-        None => {
-            info!(target: "telegram", "not configured; falling back to the CLI scaffold");
-            CliChannel::new().run(&mut manager).await
-        }
+    if let Some(token) = telegram_token {
+        info!(target: "telegram", "long-polling enabled (account `default`)");
+        let poller = TelegramPoller::new(token, "default");
+        let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
+        poller.run(manager, sink).await?;
     }
+
+    Ok(())
 }

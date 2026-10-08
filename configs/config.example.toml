@@ -3,10 +3,11 @@
 template = "agent"
 
 # Telegram(token 支持 <ENV_NAME> 占位符)
-# [channels.telegram]
-# template = "telegram"
-# token = "<TELEGRAM_BOT_TOKEN>"
-# max_send_attempts = 3
+[channels.telegram]
+enabled = true
+template = "telegram"
+token = "<TELEGRAM_BOT_TOKEN>"
+max_send_attempts = 3
 
 [engine]
 max_iterations = 100

@@ -114,7 +114,7 @@ impl SessionResolver {
 mod tests {
     use super::*;
     use crate::channel::DeliveryTarget;
-    use crate::channel::registry::CliRuntime;
+    use crate::channel::cli::CliRuntime;
     use crate::channel::telegram::send::TelegramRuntime;
 
     fn resolver() -> SessionResolver {

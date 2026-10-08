@@ -3,25 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
+use crate::channel::capabilities::ChannelCapabilities;
 use crate::channel::sender::ChannelSender;
 use crate::channel::{Channel, DeliveryTarget};
 
 pub trait ChannelRuntime: Send + Sync {
     fn capabilities(&self) -> ChannelCapabilities;
     fn sender(&self, target: &DeliveryTarget) -> Option<Arc<dyn ChannelSender>>;
-}
-
-pub struct CliRuntime;
-
-impl ChannelRuntime for CliRuntime {
-    fn capabilities(&self) -> ChannelCapabilities {
-        ChannelCapabilities::new(StreamMode::InPlace, ReplyMode::Automatic)
-    }
-
-    fn sender(&self, _target: &DeliveryTarget) -> Option<Arc<dyn ChannelSender>> {
-        None
-    }
 }
 
 #[derive(Default)]
@@ -41,38 +29,15 @@ impl ChannelRegistry {
     pub fn runtime(&self, channel: Channel) -> Option<Arc<dyn ChannelRuntime>> {
         self.runtimes.get(&channel).cloned()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.runtimes.is_empty()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-
-    fn cli_target() -> DeliveryTarget {
-        DeliveryTarget::direct(Channel::Cli, "default", "cli")
-    }
-
-    #[test]
-    fn cli_runtime_streams_in_place_and_has_no_sender() {
-        let runtime = CliRuntime;
-
-        assert_eq!(
-            runtime.capabilities(),
-            ChannelCapabilities::new(StreamMode::InPlace, ReplyMode::Automatic)
-        );
-        assert!(runtime.sender(&cli_target()).is_none());
-    }
-
-    #[test]
-    fn a_registered_runtime_can_be_looked_up() {
-        let mut registry = ChannelRegistry::new();
-        registry.register(Channel::Cli, Arc::new(CliRuntime));
-
-        let runtime = registry.runtime(Channel::Cli).unwrap();
-
-        assert_eq!(runtime.capabilities().reply, ReplyMode::Automatic);
-    }
 
     #[test]
     fn an_unregistered_channel_has_no_runtime() {
