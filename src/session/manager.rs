@@ -8,8 +8,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agent_engine::AgentEngine;
 use crate::channel::SessionKey;
+use crate::database::Database;
+use crate::database::events::{AppendOutcome, StoredEvent};
 use crate::event::{Event, EventId, EventOrigin, Part};
-use crate::event_store::{AppendOutcome, EventStore, StoredEvent};
 use crate::output::OutputSink;
 use crate::session::Session;
 use crate::session::history::TurnStatus;
@@ -49,7 +50,7 @@ pub struct SessionManager {
     engine: Arc<AgentEngine>,
     resolver: SessionResolver,
     sessions: HashMap<SessionKey, SessionHandle>,
-    event_store: EventStore,
+    database: Arc<Database>,
     agent_id: String,
 }
 
@@ -58,13 +59,13 @@ impl SessionManager {
         engine: Arc<AgentEngine>,
         resolver: SessionResolver,
         agent_id: impl Into<String>,
-        event_store: EventStore,
+        database: Arc<Database>,
     ) -> Self {
         Self {
             engine,
             resolver,
             sessions: HashMap::new(),
-            event_store,
+            database,
             agent_id: agent_id.into(),
         }
     }
@@ -78,12 +79,13 @@ impl SessionManager {
     ) -> Result<IngestOutcome> {
         let key = session_key_for(&event, &self.agent_id)?;
 
-        match self.event_store.append(&event)? {
+        match self.database.append_event(&event).await? {
             AppendOutcome::Duplicate(event_id) => Ok(IngestOutcome::Duplicate { event_id }),
             AppendOutcome::Appended(event_id) => {
                 let stored = self
-                    .event_store
-                    .get(event_id)?
+                    .database
+                    .get_event(event_id)
+                    .await?
                     .ok_or_else(|| anyhow!("event {event_id:?} vanished right after append"))?;
 
                 self.submit(
@@ -266,7 +268,7 @@ mod tests {
         built
     }
 
-    fn session_manager(model: Arc<ScriptedModel>) -> SessionManager {
+    async fn session_manager(model: Arc<ScriptedModel>) -> SessionManager {
         let config = SystemPromptConfig {
             character_path: PathBuf::from("./characters/default.md"),
         };
@@ -296,7 +298,12 @@ mod tests {
             Permissions::default(),
         );
 
-        SessionManager::new(engine, resolver, "main", EventStore::in_memory().unwrap())
+        SessionManager::new(
+            engine,
+            resolver,
+            "main",
+            Arc::new(Database::in_memory().await.unwrap()),
+        )
     }
 
     async fn enqueue(
@@ -318,7 +325,7 @@ mod tests {
     #[tokio::test]
     async fn turn_streams_content_to_the_sink() {
         let model = ScriptedModel::text_reply("hello back");
-        let mut manager = session_manager(model.clone());
+        let mut manager = session_manager(model.clone()).await;
 
         let (reply, sink) = enqueue(&mut manager, event("hello")).await;
         let outcome = reply.await.unwrap();
@@ -331,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn distinct_keys_keep_their_histories_separate() {
         let model = ScriptedModel::new(vec![text_events("REPLY_ALPHA"), text_events("REPLY_BETA")]);
-        let mut manager = session_manager(model.clone());
+        let mut manager = session_manager(model.clone()).await;
 
         let (alpha, _) = enqueue(&mut manager, event_to("alpha", "USER_ALPHA")).await;
         assert!(alpha.await.unwrap().is_ok());
@@ -349,7 +356,7 @@ mod tests {
     #[tokio::test]
     async fn same_key_processes_turns_in_order_and_continues_the_history() {
         let model = ScriptedModel::new(vec![text_events("REPLY_ONE"), text_events("REPLY_TWO")]);
-        let mut manager = session_manager(model.clone());
+        let mut manager = session_manager(model.clone()).await;
 
         let (first, _) = enqueue(&mut manager, event("USER_ONE")).await;
         let (second, _) = enqueue(&mut manager, event("USER_TWO")).await;
@@ -371,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn a_replayed_event_is_dropped_and_starts_no_turn() {
         let model = ScriptedModel::new(vec![text_events("REPLY")]);
-        let mut manager = session_manager(model.clone());
+        let mut manager = session_manager(model.clone()).await;
 
         let (reply, _) = enqueue(&mut manager, replayed_event("hi", "42")).await;
         assert!(reply.await.unwrap().is_ok());

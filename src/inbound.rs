@@ -1,8 +1,9 @@
 //! Inbound intake: normalize a raw platform update and append its events.
 
 use crate::channel::adapter::{ChannelAdapter, RawUpdate};
+use crate::database::Database;
+use crate::database::events::AppendOutcome;
 use crate::event::{Event, EventId, EventOrigin, Part};
-use crate::event_store::{AppendOutcome, EventStore};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventOutcome {
@@ -23,15 +24,15 @@ impl EventOutcome {
 
 pub struct EventIntake<'a> {
     adapter: &'a dyn ChannelAdapter,
-    store: &'a EventStore,
+    store: &'a Database,
 }
 
 impl<'a> EventIntake<'a> {
-    pub fn new(adapter: &'a dyn ChannelAdapter, store: &'a EventStore) -> Self {
+    pub fn new(adapter: &'a dyn ChannelAdapter, store: &'a Database) -> Self {
         Self { adapter, store }
     }
 
-    pub fn ingest(&self, raw: &RawUpdate) -> Vec<EventOutcome> {
+    pub async fn ingest(&self, raw: &RawUpdate) -> Vec<EventOutcome> {
         let events = match self.adapter.normalize(raw) {
             Ok(events) => events,
             Err(error) => {
@@ -41,16 +42,21 @@ impl<'a> EventIntake<'a> {
             }
         };
 
-        events
-            .into_iter()
-            .map(|event| match self.store.append(&event) {
-                Ok(AppendOutcome::Appended(id)) => EventOutcome::Stored { id, event },
-                Ok(AppendOutcome::Duplicate(id)) => EventOutcome::Duplicate { id },
-                Err(error) => EventOutcome::Rejected {
+        let mut outcomes = Vec::with_capacity(events.len());
+
+        for event in events {
+            match self.store.append_event(&event).await {
+                Ok(AppendOutcome::Appended(id)) => {
+                    outcomes.push(EventOutcome::Stored { id, event })
+                }
+                Ok(AppendOutcome::Duplicate(id)) => outcomes.push(EventOutcome::Duplicate { id }),
+                Err(error) => outcomes.push(EventOutcome::Rejected {
                     reason: error.to_string(),
-                },
-            })
-            .collect()
+                }),
+            }
+        }
+
+        outcomes
     }
 }
 
@@ -83,8 +89,8 @@ mod tests {
     use crate::channel::{Channel, DeliveryTarget};
     use crate::event::{ActorRef, DedupKey};
 
-    fn memory_store() -> EventStore {
-        EventStore::in_memory().unwrap()
+    async fn memory_store() -> Database {
+        Database::in_memory().await.unwrap()
     }
 
     fn message(text: &str, platform_event_id: &str) -> Event {
@@ -112,15 +118,15 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_new_event_is_stored() {
-        let store = memory_store();
+    #[tokio::test]
+    async fn a_new_event_is_stored() {
+        let store = memory_store().await;
         let event = message("hi", "42");
         let adapter: Arc<dyn ChannelAdapter> =
             MockChannelAdapter::new(vec![Ok(vec![event.clone()])]);
         let intake = EventIntake::new(adapter.as_ref(), &store);
 
-        let outcomes = intake.ingest(&raw(1));
+        let outcomes = intake.ingest(&raw(1)).await;
 
         assert_eq!(
             outcomes,
@@ -129,35 +135,35 @@ mod tests {
                 event,
             }]
         );
-        assert_eq!(store.len().unwrap(), 1);
+        assert_eq!(store.event_count().await.unwrap(), 1);
     }
 
-    #[test]
-    fn a_replayed_event_is_reported_as_a_duplicate() {
-        let store = memory_store();
+    #[tokio::test]
+    async fn a_replayed_event_is_reported_as_a_duplicate() {
+        let store = memory_store().await;
         let adapter: Arc<dyn ChannelAdapter> = MockChannelAdapter::new(vec![
             Ok(vec![message("hi", "42")]),
             Ok(vec![message("hi", "42")]),
         ]);
         let intake = EventIntake::new(adapter.as_ref(), &store);
 
-        intake.ingest(&raw(1));
-        let outcomes = intake.ingest(&raw(1));
+        intake.ingest(&raw(1)).await;
+        let outcomes = intake.ingest(&raw(1)).await;
 
         assert_eq!(outcomes, vec![EventOutcome::Duplicate { id: EventId(1) }]);
-        assert_eq!(store.len().unwrap(), 1);
+        assert_eq!(store.event_count().await.unwrap(), 1);
     }
 
-    #[test]
-    fn an_adapter_failure_is_reported_as_rejected() {
-        let store = memory_store();
+    #[tokio::test]
+    async fn an_adapter_failure_is_reported_as_rejected() {
+        let store = memory_store().await;
         let adapter: Arc<dyn ChannelAdapter> =
             MockChannelAdapter::new(vec![Err(AdapterError::MissingField {
                 field: "message".to_string(),
             })]);
         let intake = EventIntake::new(adapter.as_ref(), &store);
 
-        let outcomes = intake.ingest(&raw(1));
+        let outcomes = intake.ingest(&raw(1)).await;
 
         assert_eq!(
             outcomes,
@@ -165,19 +171,19 @@ mod tests {
                 reason: "platform update is missing required field `message`".to_string(),
             }]
         );
-        assert_eq!(store.len().unwrap(), 0);
+        assert_eq!(store.event_count().await.unwrap(), 0);
     }
 
-    #[test]
-    fn one_update_can_yield_several_outcomes_in_order() {
-        let store = memory_store();
+    #[tokio::test]
+    async fn one_update_can_yield_several_outcomes_in_order() {
+        let store = memory_store().await;
         let first = message("first", "1");
         let second = message("second", "2");
         let adapter: Arc<dyn ChannelAdapter> =
             MockChannelAdapter::new(vec![Ok(vec![first.clone(), second.clone()])]);
         let intake = EventIntake::new(adapter.as_ref(), &store);
 
-        let outcomes = intake.ingest(&raw(1));
+        let outcomes = intake.ingest(&raw(1)).await;
 
         assert_eq!(
             outcomes,
@@ -192,7 +198,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(store.len().unwrap(), 2);
+        assert_eq!(store.event_count().await.unwrap(), 2);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use weftic::agent_engine::AgentEngine;
 use weftic::config::{Config, model_provider::ChatModel};
-use weftic::event_store::EventStore;
+use weftic::database::Database;
 use weftic::registry_channels;
 use weftic::session::manager::SessionManager;
 use weftic::session::resolver::SessionResolver;
@@ -68,12 +68,8 @@ async fn main() -> Result<()> {
         registry.clone(),
         config.permissions.clone(),
     );
-    let mut manager = SessionManager::new(
-        engine,
-        resolver,
-        "main",
-        EventStore::open(&config.storage.db_path())?,
-    );
+    let database = Arc::new(Database::new(config.storage.db_path()).await?);
+    let mut manager = SessionManager::new(engine, resolver, "main", database);
 
     for driver in registry.inbound_drivers() {
         driver.run(&mut manager).await?;

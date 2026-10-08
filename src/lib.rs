@@ -15,8 +15,8 @@ use crate::{
 pub mod agent_engine;
 pub mod channel;
 pub mod config;
+pub mod database;
 pub mod event;
-pub mod event_store;
 pub mod identity;
 pub mod inbound;
 pub mod output;

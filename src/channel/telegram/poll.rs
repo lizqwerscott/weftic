@@ -252,8 +252,8 @@ mod tests {
     use crate::channel::sender::testing::{MockChannelSender, MockMessage};
     use crate::config::model_provider::testing::{ScriptedModel, text_events, tool_call_events};
     use crate::config::system_prompt::SystemPromptConfig;
+    use crate::database::Database;
     use crate::event::EventOrigin;
-    use crate::event_store::EventStore;
     use crate::output::NullSink;
     use crate::permissions::Permissions;
     use crate::session::resolver::SessionResolver;
@@ -392,7 +392,7 @@ mod tests {
         }
     }
 
-    fn telegram_manager(
+    async fn telegram_manager(
         model: Arc<ScriptedModel>,
         sender: Arc<MockChannelSender>,
     ) -> SessionManager {
@@ -433,7 +433,12 @@ mod tests {
             permissions,
         );
 
-        SessionManager::new(engine, resolver, "main", EventStore::in_memory().unwrap())
+        SessionManager::new(
+            engine,
+            resolver,
+            "main",
+            Arc::new(Database::in_memory().await.unwrap()),
+        )
     }
 
     #[tokio::test]
@@ -447,7 +452,7 @@ mod tests {
             text_events("done"),
         ]);
         let sender = MockChannelSender::new();
-        let mut manager = telegram_manager(model, sender.clone());
+        let mut manager = telegram_manager(model, sender.clone()).await;
 
         let (poller, _) = poller(vec![Ok(vec![private_text_update()])]);
         let (_, events) = poller.poll_once(0).await.unwrap();
@@ -477,7 +482,7 @@ mod tests {
             text_events("done"),
         ]);
         let sender = MockChannelSender::new();
-        let mut manager = telegram_manager(model.clone(), sender.clone());
+        let mut manager = telegram_manager(model.clone(), sender.clone()).await;
 
         let (poller, _) = poller(vec![
             Ok(vec![private_text_update()]),
@@ -500,7 +505,7 @@ mod tests {
     async fn a_text_only_reply_is_delivered_by_the_fallback() {
         let model = ScriptedModel::text_reply("hi back");
         let sender = MockChannelSender::new();
-        let mut manager = telegram_manager(model, sender.clone());
+        let mut manager = telegram_manager(model, sender.clone()).await;
 
         let (poller, _) = poller(vec![Ok(vec![private_text_update()])]);
         let (_, events) = poller.poll_once(0).await.unwrap();
