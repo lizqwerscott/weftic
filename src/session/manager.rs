@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
 use genai::chat::ChatMessage;
@@ -46,10 +46,12 @@ impl SessionHandle {
     }
 }
 
+/// Shared routing state. Every field is either immutable or internally locked,
+/// so the manager can be called concurrently (`&self`).
 pub struct SessionManager {
     engine: Arc<AgentEngine>,
     resolver: SessionResolver,
-    sessions: HashMap<SessionKey, SessionHandle>,
+    sessions: Mutex<HashMap<SessionKey, SessionHandle>>,
     database: Arc<Database>,
     agent_id: String,
 }
@@ -64,7 +66,7 @@ impl SessionManager {
         Self {
             engine,
             resolver,
-            sessions: HashMap::new(),
+            sessions: Mutex::new(HashMap::new()),
             database,
             agent_id: agent_id.into(),
         }
@@ -72,7 +74,7 @@ impl SessionManager {
 
     /// Append an inbound event (deduping it), then route it to its session.
     pub async fn ingest(
-        &mut self,
+        &self,
         event: Event,
         sink: Arc<dyn OutputSink>,
         reply: oneshot::Sender<anyhow::Result<()>>,
@@ -103,8 +105,15 @@ impl SessionManager {
         }
     }
 
-    fn ensure(&mut self, key: &SessionKey) -> Result<SessionHandle> {
-        match self.sessions.entry(key.clone()) {
+    /// Get or create the session task for `key`. The lock is held only for the
+    /// map lookup/insert — never across an `await`.
+    fn ensure(&self, key: &SessionKey) -> Result<SessionHandle> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("session registry mutex poisoned");
+
+        match sessions.entry(key.clone()) {
             Entry::Occupied(existing) => Ok(existing.get().clone()),
             Entry::Vacant(vacant) => {
                 let session = Session::new(self.resolver.spec_for(key)?);
@@ -117,7 +126,7 @@ impl SessionManager {
         }
     }
 
-    async fn submit(&mut self, key: &SessionKey, input: SessionInput) -> Result<()> {
+    async fn submit(&self, key: &SessionKey, input: SessionInput) -> Result<()> {
         let handle = self.ensure(key)?;
         handle.submit(input).await
     }
@@ -307,7 +316,7 @@ mod tests {
     }
 
     async fn enqueue(
-        manager: &mut SessionManager,
+        manager: &SessionManager,
         event: Event,
     ) -> (oneshot::Receiver<anyhow::Result<()>>, Arc<RecordingSink>) {
         let sink = Arc::new(RecordingSink::default());
@@ -325,9 +334,9 @@ mod tests {
     #[tokio::test]
     async fn turn_streams_content_to_the_sink() {
         let model = ScriptedModel::text_reply("hello back");
-        let mut manager = session_manager(model.clone()).await;
+        let manager = session_manager(model.clone()).await;
 
-        let (reply, sink) = enqueue(&mut manager, event("hello")).await;
+        let (reply, sink) = enqueue(&manager, event("hello")).await;
         let outcome = reply.await.unwrap();
 
         assert!(outcome.is_ok(), "turn failed: {:?}", outcome.err());
@@ -338,11 +347,11 @@ mod tests {
     #[tokio::test]
     async fn distinct_keys_keep_their_histories_separate() {
         let model = ScriptedModel::new(vec![text_events("REPLY_ALPHA"), text_events("REPLY_BETA")]);
-        let mut manager = session_manager(model.clone()).await;
+        let manager = session_manager(model.clone()).await;
 
-        let (alpha, _) = enqueue(&mut manager, event_to("alpha", "USER_ALPHA")).await;
+        let (alpha, _) = enqueue(&manager, event_to("alpha", "USER_ALPHA")).await;
         assert!(alpha.await.unwrap().is_ok());
-        let (beta, _) = enqueue(&mut manager, event_to("beta", "USER_BETA")).await;
+        let (beta, _) = enqueue(&manager, event_to("beta", "USER_BETA")).await;
         assert!(beta.await.unwrap().is_ok());
 
         assert_eq!(model.requests().len(), 2);
@@ -356,10 +365,10 @@ mod tests {
     #[tokio::test]
     async fn same_key_processes_turns_in_order_and_continues_the_history() {
         let model = ScriptedModel::new(vec![text_events("REPLY_ONE"), text_events("REPLY_TWO")]);
-        let mut manager = session_manager(model.clone()).await;
+        let manager = session_manager(model.clone()).await;
 
-        let (first, _) = enqueue(&mut manager, event("USER_ONE")).await;
-        let (second, _) = enqueue(&mut manager, event("USER_TWO")).await;
+        let (first, _) = enqueue(&manager, event("USER_ONE")).await;
+        let (second, _) = enqueue(&manager, event("USER_TWO")).await;
         assert!(first.await.unwrap().is_ok());
         assert!(second.await.unwrap().is_ok());
 
@@ -378,9 +387,9 @@ mod tests {
     #[tokio::test]
     async fn a_replayed_event_is_dropped_and_starts_no_turn() {
         let model = ScriptedModel::new(vec![text_events("REPLY")]);
-        let mut manager = session_manager(model.clone()).await;
+        let manager = session_manager(model.clone()).await;
 
-        let (reply, _) = enqueue(&mut manager, replayed_event("hi", "42")).await;
+        let (reply, _) = enqueue(&manager, replayed_event("hi", "42")).await;
         assert!(reply.await.unwrap().is_ok());
 
         let (replay_tx, _replay_rx) = oneshot::channel();
