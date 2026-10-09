@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::channel::sender::ChannelSender;
 use crate::permissions::ToolGroup;
 
-use super::Tool;
+use super::{Tool, ToolContext};
 
 #[derive(Deserialize)]
 pub struct MessageToolArgs {
@@ -61,7 +61,7 @@ impl Tool for MessageTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, Result<String>> {
+    fn call<'a>(&'a self, args: Self::Args, _ctx: ToolContext) -> super::BoxedFuture<'a, Result<String>> {
         Box::pin(async move {
             let text = args.text.unwrap_or_default();
             if text.is_empty() {
@@ -107,12 +107,15 @@ mod tests {
     async fn dispatch(sender: &Arc<MockChannelSender>, args: serde_json::Value) -> ToolResponse {
         let router = router(sender.clone());
         router
-            .dispatch(&ToolCall {
-                call_id: "call_1".to_string(),
-                fn_name: MessageTool::NAME.to_string(),
-                fn_arguments: args,
-                thought_signatures: None,
-            })
+            .dispatch(
+                &crate::tools::test_context(),
+                &ToolCall {
+                    call_id: "call_1".to_string(),
+                    fn_name: MessageTool::NAME.to_string(),
+                    fn_arguments: args,
+                    thought_signatures: None,
+                },
+            )
             .await
     }
 

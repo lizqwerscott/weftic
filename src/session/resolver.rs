@@ -9,9 +9,10 @@ use crate::channel::{Channel, ChannelChatType, DeliveryTarget, SessionKey};
 use crate::permissions::{Mode, Permissions, Role};
 use crate::session::ChannelBinding;
 use crate::session::spec::SessionSpec;
+use crate::workspace::WorkspacePolicy;
 
 pub struct SessionResolver {
-    workspace_root: PathBuf,
+    workspace_base: PathBuf,
     channel_templates: HashMap<Channel, String>,
     registry: Arc<ChannelRegistry>,
     permissions: Permissions,
@@ -38,13 +39,13 @@ impl std::error::Error for ResolveError {}
 
 impl SessionResolver {
     pub fn new(
-        workspace_root: PathBuf,
+        workspace_base: PathBuf,
         channel_templates: HashMap<Channel, String>,
         registry: Arc<ChannelRegistry>,
         permissions: Permissions,
     ) -> Self {
         Self {
-            workspace_root,
+            workspace_base,
             channel_templates,
             registry,
             permissions,
@@ -80,9 +81,17 @@ impl SessionResolver {
             },
         };
 
+        let derive = self.workspace_base.join(format!(
+            "{channel}/{}/{}",
+            target.chat_type(),
+            target.target_id()
+        ));
+
+        let workspace_policy = WorkspacePolicy::new(derive, role);
+
         Ok(SessionSpec {
             key: key.clone(),
-            workspace_root: self.workspace_root.clone(),
+            workspace_policy,
             template,
             mode,
             role,
@@ -154,7 +163,10 @@ mod tests {
         let spec = resolver().spec_for(&key).unwrap();
 
         assert_eq!(spec.key, key);
-        assert_eq!(spec.workspace_root, PathBuf::from("/work"));
+        assert_eq!(
+            spec.workspace_policy,
+            WorkspacePolicy::new(PathBuf::from("/work/webui/direct/lizqwer"), Role::Owner)
+        );
         assert_eq!(spec.template, "agent");
         assert_eq!(spec.role, Role::Owner);
         assert_eq!(spec.mode, Mode::Agent);
@@ -195,6 +207,10 @@ mod tests {
 
         assert_eq!(spec.role, Role::Member);
         assert_eq!(spec.mode, Mode::Chat);
+        assert_eq!(
+            spec.workspace_policy,
+            WorkspacePolicy::new(PathBuf::from("/work/telegram/group/-100"), Role::Member)
+        );
     }
 
     #[test]

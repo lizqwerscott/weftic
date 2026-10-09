@@ -24,6 +24,7 @@ pub mod permissions;
 pub mod session;
 pub mod system_prompt;
 pub mod tools;
+mod workspace;
 
 pub fn registry_channels(config: &Config) -> Result<Arc<ChannelRegistry>> {
     let mut registry = ChannelRegistry::new();

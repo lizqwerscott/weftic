@@ -1,5 +1,4 @@
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use genai::chat::ChatRequest;
@@ -10,6 +9,7 @@ use crate::channel::sender::ChannelSender;
 use crate::permissions::{Mode, Role};
 use crate::session::history::{SessionHistory, SessionTurn};
 use crate::session::spec::SessionSpec;
+use crate::workspace::Workspace;
 
 pub mod history;
 pub mod manager;
@@ -33,7 +33,7 @@ impl fmt::Debug for ChannelBinding {
 pub struct Session {
     key: SessionKey,
     history: SessionHistory,
-    workspace_root: PathBuf,
+    workspace: Arc<Workspace>,
     template: String,
     mode: Mode,
     role: Role,
@@ -41,16 +41,20 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(spec: SessionSpec) -> Self {
-        Self {
+    pub fn new(spec: SessionSpec) -> anyhow::Result<Self> {
+        Ok(Self {
             key: spec.key,
             history: SessionHistory::default(),
-            workspace_root: spec.workspace_root,
+            workspace: Arc::new(Workspace::new(&spec.workspace_policy)?),
             template: spec.template,
             mode: spec.mode,
             role: spec.role,
             binding: spec.binding,
-        }
+        })
+    }
+
+    pub fn workspace(&self) -> Arc<Workspace> {
+        Arc::clone(&self.workspace)
     }
 
     pub fn append_turn(&mut self, turn: SessionTurn) {

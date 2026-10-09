@@ -6,7 +6,6 @@ use figment::{
     providers::{Format, Toml},
 };
 
-use crate::channel::Channel;
 use crate::config::{
     channel::ChannelConfig,
     engine::EngineConfig,
@@ -15,12 +14,14 @@ use crate::config::{
     system_prompt::SystemPromptConfig,
 };
 use crate::permissions::Permissions;
+use crate::{channel::Channel, config::workspace::WorkspaceConfig};
 
 pub mod channel;
 pub mod engine;
 pub mod model_provider;
 pub mod storage;
 pub mod system_prompt;
+pub mod workspace;
 
 pub struct Config {
     pub model_register: ModelRegister,
@@ -29,6 +30,7 @@ pub struct Config {
     pub engine: EngineConfig,
     pub storage: StorageConfig,
     pub permissions: Permissions,
+    pub workspace: WorkspaceConfig,
 }
 
 impl Config {
@@ -74,6 +76,7 @@ impl Config {
             engine,
             storage,
             permissions,
+            workspace: app_config.extract_inner("workspace")?,
         })
     }
 

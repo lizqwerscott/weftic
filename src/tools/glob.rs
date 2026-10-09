@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::permissions::ToolGroup;
 
-use super::Tool;
+use super::{Tool, ToolContext};
 
 const GLOB_VCS_EXCLUDES: &[&str] = &[".git", ".svn", ".hg", ".bzr", ".jj", ".sl"];
 const GLOB_MAX_RESULTS: usize = 100;
@@ -20,7 +20,7 @@ const GLOB_MAX_RESULTS: usize = 100;
 #[derive(Deserialize)]
 pub struct GlobToolArgs {
     pattern: String,
-    path: String,
+    path: Option<String>,
 }
 
 pub struct GlobTool;
@@ -53,16 +53,16 @@ impl Tool for GlobTool {
             },
             "path": {
               "type": "string",
-              "description": "Directory to search in."
+              "description": "Directory to search in. Optional; defaults to the workspace root."
             }
           },
-            "required": ["pattern", "path"],
+            "required": ["pattern"],
           "additionalProperties": false
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
-        Box::pin(async move { tokio::task::spawn_blocking(move || glob_dir(args)).await? })
+    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+        Box::pin(async move { tokio::task::spawn_blocking(move || glob_dir(args, ctx)).await? })
     }
 }
 
@@ -105,16 +105,15 @@ fn sample_across_buckets(buckets: &[Vec<usize>], max: usize) -> (Vec<usize>, usi
     (picked, shown, buckets.len())
 }
 
-fn glob_dir(args: GlobToolArgs) -> Result<String> {
-    if args.path.is_empty() {
-        return Err(anyhow!("path is empty"));
-    }
-
+fn glob_dir(args: GlobToolArgs, ctx: ToolContext) -> Result<String> {
     if args.pattern.is_empty() {
         return Err(anyhow!("pattern is empty"));
     }
 
-    let path = Path::new(&args.path);
+    let path = match &args.path {
+        Some(raw) => ctx.workspace.resolve(raw)?,
+        None => ctx.workspace.cwd().to_path_buf(),
+    };
 
     if !path.exists() {
         return Err(anyhow!("{} does not exist", path.display()));
@@ -131,7 +130,7 @@ fn glob_dir(args: GlobToolArgs) -> Result<String> {
     overrides.add(&format!("!**/{{{}}}/**", GLOB_VCS_EXCLUDES.join(",")))?;
     let override_matcher = overrides.build()?;
 
-    let walker = WalkBuilder::new(path)
+    let walker = WalkBuilder::new(&path)
         .standard_filters(false)
         .overrides(override_matcher)
         .build();
@@ -158,7 +157,7 @@ fn glob_dir(args: GlobToolArgs) -> Result<String> {
         }
     }
 
-    Ok(format_paths(res, path))
+    Ok(format_paths(res, &path))
 }
 
 fn format_paths(mut res: Vec<(PathBuf, SystemTime)>, root: &Path) -> String {

@@ -21,6 +21,7 @@ use crate::tools::{
     grep::GrepTool,
     message::MessageTool,
 };
+use crate::workspace::Workspace;
 
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -62,6 +63,26 @@ impl fmt::Display for ToolRegisterError {
 
 impl std::error::Error for ToolRegisterError {}
 
+#[derive(Clone)]
+pub struct ToolContext {
+    pub workspace: Arc<Workspace>,
+}
+
+/// An unconfined context rooted at `/`, for tests that operate on absolute
+/// paths and do not care about containment.
+#[cfg(test)]
+pub(crate) fn test_context() -> ToolContext {
+    use std::path::PathBuf;
+
+    use crate::permissions::Role;
+    use crate::workspace::WorkspacePolicy;
+
+    let policy = WorkspacePolicy::new(PathBuf::from("/"), Role::Owner);
+    ToolContext {
+        workspace: Arc::new(Workspace::new(&policy).expect("root `/` must exist")),
+    }
+}
+
 pub trait Tool: Send + Sync + 'static {
     type Args: DeserializeOwned + Send;
 
@@ -76,7 +97,11 @@ pub trait Tool: Send + Sync + 'static {
         json!({"type": "object", "properties": {}, "additionalProperties": false})
     }
 
-    fn call<'a>(&'a self, args: Self::Args) -> BoxedFuture<'a, anyhow::Result<String>>;
+    fn call<'a>(
+        &'a self,
+        args: Self::Args,
+        ctx: ToolContext,
+    ) -> BoxedFuture<'a, anyhow::Result<String>>;
 }
 
 pub trait DynTool: Send + Sync {
@@ -84,7 +109,11 @@ pub trait DynTool: Send + Sync {
     fn group(&self) -> ToolGroup;
     fn declaration(&self) -> GenaiTool;
     fn get_system_description(&self) -> &str;
-    fn call_json<'a>(&'a self, args: Value) -> BoxedFuture<'a, Result<String, ToolError>>;
+    fn call_json<'a>(
+        &'a self,
+        args: Value,
+        ctx: ToolContext,
+    ) -> BoxedFuture<'a, Result<String, ToolError>>;
 }
 
 impl<T: Tool> DynTool for T {
@@ -106,14 +135,18 @@ impl<T: Tool> DynTool for T {
         self.system_description()
     }
 
-    fn call_json<'a>(&'a self, args: Value) -> BoxedFuture<'a, Result<String, ToolError>> {
+    fn call_json<'a>(
+        &'a self,
+        args: Value,
+        ctx: ToolContext,
+    ) -> BoxedFuture<'a, Result<String, ToolError>> {
         Box::pin(async move {
             let type_args =
                 serde_json::from_value::<T::Args>(args).map_err(|e| ToolError::InvalidArgs {
                     tool: T::NAME.to_string(),
                     message: e.to_string(),
                 })?;
-            match self.call(type_args).await {
+            match self.call(type_args, ctx).await {
                 Ok(res) => Ok(res),
                 Err(e) => Err(ToolError::Execution {
                     tool: T::NAME.to_string(),
@@ -214,11 +247,11 @@ impl ToolRouter {
             .map(Arc::as_ref)
     }
 
-    pub async fn dispatch(&self, call: &ToolCall) -> ToolResponse {
+    pub async fn dispatch(&self, ctx: &ToolContext, call: &ToolCall) -> ToolResponse {
         ToolResponse::from_tool_call(
             call,
             match self.get(&call.fn_name) {
-                Some(tool) => match tool.call_json(call.fn_arguments.clone()).await {
+                Some(tool) => match tool.call_json(call.fn_arguments.clone(), ctx.clone()).await {
                     Ok(res) => res,
                     Err(e) => e.to_model_payload(),
                 },
@@ -230,8 +263,8 @@ impl ToolRouter {
         )
     }
 
-    pub async fn dispatch_all(&self, call: &[ToolCall]) -> Vec<ToolResponse> {
-        futures::future::join_all(call.iter().map(|call| self.dispatch(call))).await
+    pub async fn dispatch_all(&self, ctx: &ToolContext, calls: &[ToolCall]) -> Vec<ToolResponse> {
+        futures::future::join_all(calls.iter().map(|call| self.dispatch(ctx, call))).await
     }
 }
 

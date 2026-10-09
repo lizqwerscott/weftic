@@ -1,5 +1,4 @@
 use std::{
-    path::Path,
     process::{ExitStatus, Stdio},
     time::Duration,
 };
@@ -10,7 +9,7 @@ use anyhow::{Result, anyhow};
 use serde_json::json;
 use tokio::process::Command;
 
-use crate::permissions::ToolGroup;
+use crate::{permissions::ToolGroup, tools::ToolContext};
 
 use super::Tool;
 
@@ -22,7 +21,7 @@ const BASH_MAX_OUTPUT_BYTES: usize = 64_000;
 pub struct BashToolArgs {
     description: String,
     command: String,
-    workdir: String,
+    workdir: Option<String>,
     timeout_ms: Option<u64>,
 }
 
@@ -59,23 +58,22 @@ impl Tool for BashTool {
             },
             "workdir": {
               "type": "string",
-              "description": "Absolute working directory for this command."
+              "description": "Working directory for this command. Optional; defaults to the workspace root. Relative paths resolve against the workspace root."
             },
           },
           "required": [
             "description",
-            "command",
-            "workdir"
+            "command"
           ]
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
-        Box::pin(async move { bash(args).await })
+    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+        Box::pin(async move { bash(args, ctx).await })
     }
 }
 
-async fn bash(args: BashToolArgs) -> Result<String> {
+async fn bash(args: BashToolArgs, ctx: ToolContext) -> Result<String> {
     if args.description.is_empty() {
         return Err(anyhow!("description is empty"));
     }
@@ -84,27 +82,19 @@ async fn bash(args: BashToolArgs) -> Result<String> {
         return Err(anyhow!("command is empty"));
     }
 
-    if args.workdir.is_empty() {
-        return Err(anyhow!("workdir is empty"));
+    let workdir = match &args.workdir {
+        Some(raw) => ctx.workspace.resolve(raw)?,
+        None => ctx.workspace.cwd().to_path_buf(),
+    };
+
+    if !workdir.exists() {
+        return Err(anyhow!("{} does not exist", workdir.display()));
     }
 
-    let path = Path::new(&args.workdir);
-
-    if !path.is_absolute() {
-        return Err(anyhow!(
-            "workdir must be an absolute path, got: {}",
-            path.display()
-        ));
-    }
-
-    if !path.exists() {
-        return Err(anyhow!("{} does not exist", path.display()));
-    }
-
-    if !path.is_dir() {
+    if !workdir.is_dir() {
         return Err(anyhow!(
             "workdir is a file, not a directory: {}",
-            path.display()
+            workdir.display()
         ));
     }
 
@@ -116,7 +106,7 @@ async fn bash(args: BashToolArgs) -> Result<String> {
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(&args.command)
-        .current_dir(&args.workdir)
+        .current_dir(&workdir)
         .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

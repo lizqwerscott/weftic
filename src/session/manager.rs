@@ -126,7 +126,7 @@ impl SessionManager {
         match sessions.entry(key.clone()) {
             Entry::Occupied(existing) => Ok(existing.get().handle.clone()),
             Entry::Vacant(vacant) => {
-                let session = Session::new(self.resolver.spec_for(key)?);
+                let session = Session::new(self.resolver.spec_for(key)?)?;
                 let (tx, rx) = mpsc::channel(SESSION_QUEUE);
                 let task = tokio::spawn(run_session(self.engine.clone(), session, rx));
                 let handle = SessionHandle { tx };
@@ -341,7 +341,7 @@ mod tests {
         registry.register(Channel::Webui, MockRuntime::live());
 
         let resolver = SessionResolver::new(
-            PathBuf::from("/work"),
+            crate::workspace::temp_base("session"),
             templates,
             Arc::new(registry),
             Permissions::default(),

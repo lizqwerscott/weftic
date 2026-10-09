@@ -427,7 +427,7 @@ mod tests {
             owner: vec!["telegram:123456".to_string()],
         };
         let resolver = SessionResolver::new(
-            PathBuf::from("/work"),
+            crate::workspace::temp_base("telegram"),
             templates,
             Arc::new(registry),
             permissions,

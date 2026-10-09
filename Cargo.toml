@@ -15,6 +15,7 @@ genai = "0.6.5"
 grep = "0.4.1"
 ignore = "0.4.33"
 minijinja = "2.24.0"
+path-clean = "1.0.1"
 percent-encoding = "2.3.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }

@@ -22,6 +22,7 @@ use tracing::{error, info};
 use crate::channel::capabilities::ReplyMode;
 use crate::permissions::allowed_groups;
 use crate::tools::Tool;
+use crate::tools::ToolContext;
 use crate::tools::ToolRouter;
 use crate::tools::message::MessageTool;
 
@@ -33,6 +34,18 @@ struct TurnMeta {
     delivered: bool,
     /// The final assistant text, when the turn ended with any.
     final_text: Option<String>,
+}
+
+/// Everything one turn operates on: the rendered prompt, the history it is
+/// replayed against, the accumulating steps, and the tool/runtime handles.
+struct TurnState<'a> {
+    system: String,
+    history: &'a ChatRequest,
+    steps: ChatRequest,
+    sink: &'a Arc<dyn OutputSink>,
+    meta: TurnMeta,
+    router: &'a ToolRouter,
+    ctx: &'a ToolContext,
 }
 
 #[derive(Debug, Clone)]
@@ -90,8 +103,6 @@ impl AgentEngine {
             session.binding().sender.clone(),
         );
 
-        let mut steps = ChatRequest::default().append_message(input);
-
         let system = self
             .system_prompt_manager
             .render(
@@ -101,12 +112,21 @@ impl AgentEngine {
             .map_err(|e| TurnStartError::Render(format!("{e:#}")))?;
 
         let history = session.get_history();
-        let mut meta = TurnMeta::default();
+        let ctx = ToolContext {
+            workspace: session.workspace(),
+        };
 
-        let error = self
-            .drive(system, &history, &mut steps, sink, &mut meta, &router)
-            .await
-            .err();
+        let mut state = TurnState {
+            system,
+            history: &history,
+            steps: ChatRequest::default().append_message(input),
+            sink,
+            meta: TurnMeta::default(),
+            router: &router,
+            ctx: &ctx,
+        };
+
+        let error = self.drive(&mut state).await.err();
 
         let status = match error {
             Some(source) => TurnStatus::Failed(source),
@@ -114,33 +134,27 @@ impl AgentEngine {
         };
 
         if matches!(status, TurnStatus::Complete) {
-            deliver_fallback(session, &meta).await;
+            deliver_fallback(session, &state.meta).await;
         }
 
         Ok(SessionTurn::new(
-            &steps,
+            &state.steps,
             source_event_id,
             status,
-            meta.stop_reason,
-            meta.usage,
+            state.meta.stop_reason,
+            state.meta.usage,
         ))
     }
 
-    async fn drive(
-        &self,
-        system: String,
-        history: &ChatRequest,
-        steps: &mut ChatRequest,
-        sink: &Arc<dyn OutputSink>,
-        meta: &mut TurnMeta,
-        router: &ToolRouter,
-    ) -> Result<(), TurnError> {
-        let chat_req = ChatRequest::from_system(system.clone())
-            .with_tools(router.declarations())
-            .append_messages(history.messages.clone());
+    async fn drive(&self, state: &mut TurnState<'_>) -> Result<(), TurnError> {
+        let chat_req = ChatRequest::from_system(state.system.clone())
+            .with_tools(state.router.declarations())
+            .append_messages(state.history.messages.clone());
 
         for iteration in 1..=self.max_iterations {
-            let chat_req = chat_req.clone().append_messages(steps.messages.clone());
+            let chat_req = chat_req
+                .clone()
+                .append_messages(state.steps.messages.clone());
 
             let mut chat_stream = self
                 .model
@@ -155,19 +169,19 @@ impl AgentEngine {
                 match result.map_err(|e| TurnError::Stream(format!("{e:#}")))? {
                     ChatStreamEvent::Start => {}
                     ChatStreamEvent::Chunk(chunk) => {
-                        sink.on_content(&chunk.content);
+                        state.sink.on_content(&chunk.content);
                     }
 
                     ChatStreamEvent::ReasoningChunk(chunk) => {
-                        sink.on_reasoning(&chunk.content);
+                        state.sink.on_reasoning(&chunk.content);
                     }
                     ChatStreamEvent::End(end) => {
-                        sink.finish();
+                        state.sink.finish();
                         captured_reasoning = end.captured_reasoning_content;
                         assistant_content = end.captured_content;
 
-                        meta.stop_reason = end.captured_stop_reason;
-                        meta.usage = end.captured_usage;
+                        state.meta.stop_reason = end.captured_stop_reason;
+                        state.meta.usage = end.captured_usage;
                     }
                     _ => {}
                 }
@@ -198,25 +212,25 @@ impl AgentEngine {
                     .iter()
                     .any(|call| call.fn_name == MessageTool::NAME)
                 {
-                    meta.delivered = true;
+                    state.meta.delivered = true;
                 }
 
-                let tool_responses = router.dispatch_all(&tool_calls).await;
-                sink.on_tool_calls(&tool_calls, &tool_responses);
+                let tool_responses = state.router.dispatch_all(state.ctx, &tool_calls).await;
+                state.sink.on_tool_calls(&tool_calls, &tool_responses);
 
-                let current = std::mem::take(steps);
-                *steps = current
+                let current = std::mem::take(&mut state.steps);
+                state.steps = current
                     .append_message(assistant_msg)
                     .append_messages(tool_responses);
 
                 continue;
             }
 
-            sink.on_stop_reason(&meta.stop_reason);
+            state.sink.on_stop_reason(&state.meta.stop_reason);
 
             if !has_text {
                 if matches!(
-                    meta.stop_reason,
+                    state.meta.stop_reason,
                     Some(StopReason::ContentFilter(_)) | Some(StopReason::MaxTokens(_))
                 ) {
                     return Ok(());
@@ -225,14 +239,14 @@ impl AgentEngine {
                 return Err(TurnError::EmptyResponse);
             }
 
-            if let Some(usage) = &meta.usage {
-                sink.on_usage(usage, iteration);
+            if let Some(usage) = &state.meta.usage {
+                state.sink.on_usage(usage, iteration);
             }
 
-            let current = std::mem::take(steps);
-            *steps = current.append_message(assistant_msg);
+            let current = std::mem::take(&mut state.steps);
+            state.steps = current.append_message(assistant_msg);
 
-            meta.final_text = final_text;
+            state.meta.final_text = final_text;
 
             return Ok(());
         }

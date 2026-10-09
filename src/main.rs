@@ -52,8 +52,6 @@ async fn main() -> Result<()> {
     ));
     engine.init()?;
 
-    let workspace_root = std::env::current_dir()?;
-
     let registry = registry_channels(&config)?;
 
     if registry.is_empty() {
@@ -64,7 +62,7 @@ async fn main() -> Result<()> {
     }
 
     let resolver = SessionResolver::new(
-        workspace_root,
+        config.workspace.base.clone(),
         channel_templates,
         registry.clone(),
         config.permissions.clone(),

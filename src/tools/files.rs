@@ -1,7 +1,6 @@
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader},
-    path::Path,
 };
 
 use serde::Deserialize;
@@ -12,7 +11,7 @@ use anyhow::{Result, anyhow};
 use crate::permissions::ToolGroup;
 use crate::tools::MAX_LINE_LENGTH;
 
-use super::{Tool, truncate_line};
+use super::{Tool, ToolContext, truncate_line};
 
 // read
 
@@ -71,24 +70,17 @@ impl Tool for ReadTool {
         })
     }
 
-    fn call<'a>(&'a self, args: ReadToolArgs) -> super::BoxedFuture<'a, Result<String>> {
-        Box::pin(async move { tokio::task::spawn_blocking(move || read_file(args)).await? })
+    fn call<'a>(&'a self, args: ReadToolArgs, ctx: ToolContext) -> super::BoxedFuture<'a, Result<String>> {
+        Box::pin(async move { tokio::task::spawn_blocking(move || read_file(args, ctx)).await? })
     }
 }
 
-fn read_file(args: ReadToolArgs) -> Result<String> {
+fn read_file(args: ReadToolArgs, ctx: ToolContext) -> Result<String> {
     if args.file_path.is_empty() {
         return Err(anyhow!("file_path is empty"));
     }
 
-    let path = Path::new(&args.file_path);
-
-    if !path.is_absolute() {
-        return Err(anyhow!(
-            "file_path must be an absolute path, got: {}",
-            path.display()
-        ));
-    }
+    let path = ctx.workspace.resolve(&args.file_path)?;
 
     if !path.exists() {
         return Err(anyhow!("{} does not exist", path.display()));
@@ -101,7 +93,7 @@ fn read_file(args: ReadToolArgs) -> Result<String> {
         ));
     }
 
-    let file = File::open(path)?;
+    let file = File::open(&path)?;
     let reader = BufReader::new(file);
 
     let offset: usize = usize::try_from(args.offset.unwrap_or(1))?;
@@ -232,24 +224,17 @@ impl Tool for WriteTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
-        Box::pin(async move { tokio::task::spawn_blocking(move || write_file(args)).await? })
+    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+        Box::pin(async move { tokio::task::spawn_blocking(move || write_file(args, ctx)).await? })
     }
 }
 
-fn write_file(args: WriteToolArgs) -> Result<String> {
+fn write_file(args: WriteToolArgs, ctx: ToolContext) -> Result<String> {
     if args.file_path.is_empty() {
         return Err(anyhow!("file_path is empty"));
     }
 
-    let path = Path::new(&args.file_path);
-
-    if !path.is_absolute() {
-        return Err(anyhow!(
-            "file_path must be an absolute path, got: {}",
-            path.display()
-        ));
-    }
+    let path = ctx.workspace.resolve(&args.file_path)?;
 
     if path.is_dir() {
         return Err(anyhow!(
@@ -266,7 +251,7 @@ fn write_file(args: WriteToolArgs) -> Result<String> {
 
     let output = format!("{}, {}", oper, path.display());
 
-    fs::write(path, args.content)?;
+    fs::write(&path, args.content)?;
 
     Ok(output)
 }
@@ -324,23 +309,17 @@ impl Tool for EditTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
-        Box::pin(async move { tokio::task::spawn_blocking(move || edit_file(args)).await? })
+    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+        Box::pin(async move { tokio::task::spawn_blocking(move || edit_file(args, ctx)).await? })
     }
 }
 
-fn edit_file(args: EditToolArgs) -> Result<String> {
+fn edit_file(args: EditToolArgs, ctx: ToolContext) -> Result<String> {
     if args.file_path.is_empty() {
         return Err(anyhow!("file_path is empty"));
     }
 
-    let path = Path::new(&args.file_path);
-    if !path.is_absolute() {
-        return Err(anyhow!(
-            "file_path must be an absolute path, got: {}",
-            path.display()
-        ));
-    }
+    let path = ctx.workspace.resolve(&args.file_path)?;
 
     if !path.exists() {
         return Err(anyhow!("{} does not exist", path.display()));
@@ -357,7 +336,7 @@ fn edit_file(args: EditToolArgs) -> Result<String> {
         return Err(anyhow!("old_string is empty"));
     }
 
-    let content = fs::read_to_string(path)?;
+    let content = fs::read_to_string(&path)?;
     let count = content.matches(&args.old_string).count();
 
     if count == 0 {
@@ -379,7 +358,7 @@ fn edit_file(args: EditToolArgs) -> Result<String> {
         content.replacen(&args.old_string, &args.new_string, 1)
     };
 
-    fs::write(path, new_content)?;
+    fs::write(&path, new_content)?;
     let out = if replace_all {
         format!(
             "The file {} has been updated. All occurrences were successfully replaced.",
@@ -409,11 +388,14 @@ mod tests {
     }
 
     fn read(path: &Path, offset: Option<u64>, limit: Option<u64>) -> Result<String> {
-        read_file(ReadToolArgs {
-            file_path: path.to_string_lossy().into_owned(),
-            offset,
-            limit,
-        })
+        read_file(
+            ReadToolArgs {
+                file_path: path.to_string_lossy().into_owned(),
+                offset,
+                limit,
+            },
+            crate::tools::test_context(),
+        )
     }
 
     fn edit(
@@ -422,12 +404,15 @@ mod tests {
         new_string: &str,
         replace_all: Option<bool>,
     ) -> Result<String> {
-        edit_file(EditToolArgs {
-            file_path: path.to_string_lossy().into_owned(),
-            old_string: old_string.to_string(),
-            new_string: new_string.to_string(),
-            replace_all,
-        })
+        edit_file(
+            EditToolArgs {
+                file_path: path.to_string_lossy().into_owned(),
+                old_string: old_string.to_string(),
+                new_string: new_string.to_string(),
+                replace_all,
+            },
+            crate::tools::test_context(),
+        )
     }
 
     #[test]
@@ -549,14 +534,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_relative_path() {
-        let err = read(Path::new("relative.txt"), None, None)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("absolute"), "unexpected error: {err}");
-    }
-
-    #[test]
     fn rejects_directory() {
         let err = read(&std::env::temp_dir(), None, None)
             .unwrap_err()
@@ -656,14 +633,6 @@ mod tests {
     fn edit_rejects_empty_file_path() {
         let err = edit(Path::new(""), "a", "b", None).unwrap_err().to_string();
         assert_eq!(err, "file_path is empty");
-    }
-
-    #[test]
-    fn edit_rejects_relative_path() {
-        let err = edit(Path::new("relative.txt"), "a", "b", None)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("absolute"), "unexpected error: {err}");
     }
 
     #[test]

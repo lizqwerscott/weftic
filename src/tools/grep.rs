@@ -1,5 +1,5 @@
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Mutex,
 };
 
@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::permissions::ToolGroup;
 use crate::tools::{MAX_LINE_LENGTH, truncate_line};
 
-use super::Tool;
+use super::{Tool, ToolContext};
 
 const GREP_MAX_MATCHES: usize = 250;
 
@@ -93,7 +93,7 @@ impl<'a> ParallelVisitor for SearchVisitor<'a> {
 #[derive(Deserialize)]
 pub struct GrepToolArgs {
     pattern: String,
-    path: String,
+    path: Option<String>,
     include: Option<String>,
 }
 
@@ -123,20 +123,20 @@ impl Tool for GrepTool {
             },
             "path": {
               "type": "string",
-              "description": "File or directory target."
+              "description": "File or directory target. Optional; defaults to the workspace root."
             },
             "include": {
               "type": "string",
               "description": "One positive glob filter for which files to search (e.g. *.ts). Comma-separated lists and negated (!) values are rejected up front."
             }
           },
-            "required": ["pattern", "path"],
+            "required": ["pattern"],
           "additionalProperties": false
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args) -> super::BoxedFuture<'a, anyhow::Result<String>> {
-        Box::pin(async move { tokio::task::spawn_blocking(move || grep_dir(args)).await? })
+    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+        Box::pin(async move { tokio::task::spawn_blocking(move || grep_dir(args, ctx)).await? })
     }
 }
 
@@ -167,11 +167,7 @@ fn validate_include(include: &str) -> Result<&str> {
     Ok(include)
 }
 
-fn grep_dir(args: GrepToolArgs) -> Result<String> {
-    if args.path.is_empty() {
-        return Err(anyhow!("path is empty"));
-    }
-
+fn grep_dir(args: GrepToolArgs, tool_ctx: ToolContext) -> Result<String> {
     if args.pattern.is_empty() {
         return Err(anyhow!("pattern is empty"));
     }
@@ -181,7 +177,10 @@ fn grep_dir(args: GrepToolArgs) -> Result<String> {
         None => None,
     };
 
-    let path = Path::new(&args.path);
+    let path = match &args.path {
+        Some(raw) => tool_ctx.workspace.resolve(raw)?,
+        None => tool_ctx.workspace.cwd().to_path_buf(),
+    };
 
     if !path.exists() {
         return Err(anyhow!("{} does not exist", path.display()));
@@ -200,7 +199,7 @@ fn grep_dir(args: GrepToolArgs) -> Result<String> {
     };
 
     if path.is_dir() {
-        let mut walk = WalkBuilder::new(path);
+        let mut walk = WalkBuilder::new(&path);
         if let Some(include) = include {
             let mut overrides = OverrideBuilder::new(".");
             overrides.add(&include)?;
@@ -217,7 +216,7 @@ fn grep_dir(args: GrepToolArgs) -> Result<String> {
 
         searcher.search_path(
             &ctx.matcher,
-            path,
+            &path,
             UTF8(|lnum, line| {
                 hits.push((lnum, line.trim_end().to_string()));
                 Ok(true)
