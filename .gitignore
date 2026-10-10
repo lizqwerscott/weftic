@@ -20,3 +20,7 @@ characters/*
 
 # Local runtime data (event store)
 /data/
+
+# Local agent docs (not tracked)
+/AGENTS.md
+/docs/
