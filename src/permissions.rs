@@ -21,10 +21,6 @@ pub enum ToolGroup {
     Outbound,
     File,
     Exec,
-    Web,
-    Memory,
-    Media,
-    Plan,
 }
 
 pub fn allowed_groups(mode: Mode, role: Role) -> Vec<ToolGroup> {
@@ -32,15 +28,7 @@ pub fn allowed_groups(mode: Mode, role: Role) -> Vec<ToolGroup> {
         Role::Member => vec![ToolGroup::Outbound],
         Role::Owner => match mode {
             Mode::Chat => vec![ToolGroup::Outbound],
-            Mode::Agent => vec![
-                ToolGroup::Outbound,
-                ToolGroup::File,
-                ToolGroup::Exec,
-                ToolGroup::Web,
-                ToolGroup::Memory,
-                ToolGroup::Media,
-                ToolGroup::Plan,
-            ],
+            Mode::Agent => vec![ToolGroup::Outbound, ToolGroup::File, ToolGroup::Exec],
         },
     }
 }
@@ -88,15 +76,7 @@ mod tests {
 
         assert_eq!(
             groups,
-            vec![
-                ToolGroup::Outbound,
-                ToolGroup::File,
-                ToolGroup::Exec,
-                ToolGroup::Web,
-                ToolGroup::Memory,
-                ToolGroup::Media,
-                ToolGroup::Plan,
-            ]
+            vec![ToolGroup::Outbound, ToolGroup::File, ToolGroup::Exec]
         );
     }
 
