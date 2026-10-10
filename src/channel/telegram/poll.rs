@@ -14,7 +14,7 @@ use crate::channel::Channel;
 use crate::channel::adapter::{ChannelAdapter, RawUpdate};
 use crate::channel::registry::InboundDriver;
 use crate::channel::telegram::TelegramAdapter;
-use crate::channel::telegram::client::{Envelope, TelegramClient};
+use crate::channel::telegram::client::{BotMe, Envelope, TelegramClient};
 use crate::event::{Event, EventOrigin, Part};
 use crate::output::{NullSink, OutputSink};
 use crate::session::manager::{IngestOutcome, SessionManager};
@@ -65,14 +65,18 @@ pub struct TelegramPoller {
 }
 
 impl TelegramPoller {
-    pub fn new(client: Arc<TelegramClient>, account_id: impl Into<String>) -> Self {
-        Self::with_source(Arc::new(TelegramUpdates::new(client)), account_id)
+    pub fn new(client: Arc<TelegramClient>, account_id: impl Into<String>, bot: &BotMe) -> Self {
+        Self::with_source(Arc::new(TelegramUpdates::new(client)), account_id, bot)
     }
 
-    pub fn with_source(source: Arc<dyn UpdateSource>, account_id: impl Into<String>) -> Self {
+    pub fn with_source(
+        source: Arc<dyn UpdateSource>,
+        account_id: impl Into<String>,
+        bot: &BotMe,
+    ) -> Self {
         Self {
             source,
-            adapter: TelegramAdapter::new(account_id),
+            adapter: TelegramAdapter::new(account_id, bot),
         }
     }
 
@@ -143,6 +147,9 @@ async fn deliver(manager: &SessionManager, event: Event, sink: &Arc<dyn OutputSi
         },
         Ok(IngestOutcome::Duplicate { .. }) => {
             debug!(target: "telegram", "duplicate update skipped");
+        }
+        Ok(IngestOutcome::Ignored { .. }) => {
+            debug!(target: "telegram", "update dropped by the access gate");
         }
         Err(error) => error!(target: "telegram", "ingest failed: {error:#}"),
     }
@@ -244,6 +251,7 @@ mod tests {
 
     use super::testing::ScriptedUpdates;
     use super::*;
+    use crate::access::AccessPolicy;
     use crate::agent_engine::AgentEngine;
     use crate::channel::DeliveryTarget;
     use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
@@ -273,10 +281,17 @@ mod tests {
         })
     }
 
+    fn bot() -> BotMe {
+        BotMe {
+            id: 1,
+            username: None,
+        }
+    }
+
     fn poller(batches: Vec<Result<Vec<Value>>>) -> (TelegramPoller, Arc<ScriptedUpdates>) {
         let source = ScriptedUpdates::new(batches);
         (
-            TelegramPoller::with_source(source.clone(), "default"),
+            TelegramPoller::with_source(source.clone(), "default", &bot()),
             source,
         )
     }
@@ -426,11 +441,16 @@ mod tests {
         let permissions = Permissions {
             owner: vec!["telegram:123456".to_string()],
         };
+        let access = AccessPolicy {
+            dm_allow: vec!["telegram:123456".to_string()],
+            groups: vec![],
+        };
         let resolver = SessionResolver::new(
             crate::workspace::temp_base("telegram"),
             templates,
             Arc::new(registry),
             permissions,
+            access,
         );
 
         SessionManager::new(

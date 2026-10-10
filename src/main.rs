@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
     ));
     engine.init()?;
 
-    let registry = registry_channels(&config)?;
+    let registry = registry_channels(&config).await?;
 
     if registry.is_empty() {
         warn!(
@@ -66,6 +66,7 @@ async fn main() -> Result<()> {
         channel_templates,
         registry.clone(),
         config.permissions.clone(),
+        config.access.clone(),
     );
     let database = Arc::new(Database::new(config.storage.db_path()).await?);
     let manager = Arc::new(SessionManager::new(

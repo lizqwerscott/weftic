@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::{path::PathBuf, sync::Mutex};
 
 use anyhow::{Result, anyhow};
 use grep::{
@@ -135,7 +132,11 @@ impl Tool for GrepTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+    fn call<'a>(
+        &'a self,
+        args: Self::Args,
+        ctx: ToolContext,
+    ) -> super::BoxedFuture<'a, anyhow::Result<String>> {
         Box::pin(async move { tokio::task::spawn_blocking(move || grep_dir(args, ctx)).await? })
     }
 }

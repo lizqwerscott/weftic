@@ -8,21 +8,32 @@ pub mod send;
 use serde::Deserialize;
 
 use crate::channel::adapter::{AdapterError, ChannelAdapter, RawUpdate};
+use crate::channel::telegram::client::BotMe;
 use crate::channel::{Channel, ChannelChatType, DeliveryTarget};
 use crate::event::{
-    DedupKey, Delivery, Entity, EntityKind, Envelope, Event, EventOrigin, MediaHandle, Mention,
-    MsgRef, Part, PlatformEvent, PlatformKind, ServiceKind, Timestamp,
+    BotRef, DedupKey, Delivery, Entity, EntityKind, Envelope, Event, EventOrigin, MediaHandle,
+    Mention, Part, PlatformEvent, PlatformKind, ReplyRef, ServiceKind, Timestamp,
 };
 use crate::identity::member_ref;
 
 pub struct TelegramAdapter {
     account_id: String,
+    bot: BotRef,
 }
 
 impl TelegramAdapter {
-    pub fn new(account_id: impl Into<String>) -> Self {
+    pub fn new(account_id: impl Into<String>, bot: &BotMe) -> Self {
+        let account_id = account_id.into();
+        let platform_id = bot.id.to_string();
+        let actor = member_ref(Channel::Telegram, &account_id, &platform_id);
+
         Self {
-            account_id: account_id.into(),
+            account_id,
+            bot: BotRef {
+                actor,
+                platform_id,
+                username: bot.username.clone(),
+            },
         }
     }
 
@@ -47,19 +58,29 @@ impl TelegramAdapter {
 
         let envelope = Envelope {
             sender,
+            sender_platform_id: sender_id,
             sender_name: Some(sender_name),
+            bot: Some(self.bot.clone()),
             thread: message.message_thread_id.map(|id| id.to_string()),
             date: Timestamp::from_millis(message.date.saturating_mul(1000)),
             edit_date: message
                 .edit_date
                 .map(|seconds| Timestamp::from_millis(seconds.saturating_mul(1000))),
-            reply_to: message
-                .reply_to_message
-                .as_ref()
-                .map(|replied| MsgRef(replied.message_id.to_string())),
+            reply_to: message.reply_to_message.as_deref().and_then(|replied| {
+                let (sender_id, sender_name) = sender_identity(replied).ok()?;
+                let sender = member_ref(Channel::Telegram, account, &sender_id);
+
+                Some(ReplyRef {
+                    message_id: replied.message_id.to_string(),
+                    sender,
+                    sender_platform_id: sender_id,
+                    sender_name,
+                    snippet: reply_snippet(replied),
+                })
+            }),
             quote: None,
             forward: None,
-            mentions: map_mentions(message.entities.as_deref().unwrap_or(&[]), account),
+            mentions: map_mentions(message, account, &self.bot),
             reply_markup: None,
         };
 
@@ -69,6 +90,7 @@ impl TelegramAdapter {
                 kind,
                 target: target_for(account, message),
                 envelope,
+                message_id: Some(message.message_id.to_string()),
                 parts,
                 dedup: Some(DedupKey {
                     platform: Channel::Telegram,
@@ -160,6 +182,41 @@ fn service_kind(message: &Message) -> Option<ServiceKind> {
     }
 }
 
+const REPLY_SNIPPET_MAX_CHARS: usize = 200;
+
+fn reply_snippet(replied: &Message) -> Option<String> {
+    let raw = match (&replied.text, &replied.caption) {
+        (Some(text), _) => text.clone(),
+        (None, Some(caption)) => caption.clone(),
+        (None, None) => media_placeholder(replied)?, // 纯媒体 → 占位符
+    };
+    Some(truncate_chars(&raw, REPLY_SNIPPET_MAX_CHARS))
+}
+
+fn media_placeholder(message: &Message) -> Option<String> {
+    if message.photo.is_some() {
+        Some("[photo]".to_string())
+    } else if message.voice.is_some() {
+        Some("[voice]".to_string())
+    } else if message.document.is_some() {
+        Some("[document]".to_string())
+    } else if message.sticker.is_some() {
+        Some("[sticker]".to_string())
+    } else {
+        None
+    }
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 fn build_parts(message: &Message) -> Vec<Part> {
     let mut parts = Vec::new();
     let caption = message.caption.clone();
@@ -228,21 +285,79 @@ fn entity_kind(kind: &str) -> EntityKind {
     }
 }
 
-fn map_mentions(entities: &[MessageEntity], account: &str) -> Vec<Mention> {
+fn map_mentions(message: &Message, account: &str, bot: &BotRef) -> Vec<Mention> {
+    let entities = message.entities.as_deref().unwrap_or(&[]);
+    let text = message.text.as_deref();
+
     entities
         .iter()
-        .filter_map(|entity| {
-            if entity.kind != "text_mention" {
-                return None;
+        .filter_map(|entity| match entity.kind.as_str() {
+            "text_mention" => {
+                let user = entity.user.as_ref()?;
+                let platform_id = user.id.to_string();
+
+                Some(Mention {
+                    actor: Some(member_ref(Channel::Telegram, account, &platform_id)),
+                    platform_id: Some(platform_id.clone()),
+                    username: user.username.clone(),
+                    name: display_name(user),
+                    is_bot: user.is_bot,
+                    is_self: is_the_bot(Some(&platform_id), user.username.as_deref(), bot),
+                })
             }
-            let user = entity.user.as_ref()?;
-            Some(Mention {
-                actor: member_ref(Channel::Telegram, account, &user.id.to_string()),
-                name: display_name(user),
-                is_bot: user.is_bot,
-            })
+            "mention" => {
+                // A bare `@username` carries no user object, so the ref is keyed
+                // by the username and `platform_id` stays unknown.
+                let username = mention_username(text?, entity)?;
+
+                Some(Mention {
+                    actor: None,
+                    platform_id: None,
+                    username: Some(username.to_string()),
+                    name: username.to_string(),
+                    is_bot: false,
+                    is_self: is_the_bot(None, Some(username), bot),
+                })
+            }
+            _ => None,
         })
         .collect()
+}
+
+fn is_the_bot(platform_id: Option<&str>, username: Option<&str>, bot: &BotRef) -> bool {
+    platform_id == Some(bot.platform_id.as_str())
+        || (username.is_some() && username == bot.username.as_deref())
+}
+
+/// Extract the `@username` behind a plain `mention` entity. Telegram measures
+/// entity offsets and lengths in **UTF-16 code units**, so slicing by byte or
+/// char would split non-BMP characters; `utf16_to_byte` maps the bounds and
+/// `None` is returned when they do not land on character boundaries.
+fn mention_username<'a>(text: &'a str, entity: &MessageEntity) -> Option<&'a str> {
+    let start = utf16_to_byte(text, entity.offset.max(0) as usize)?;
+    let end = utf16_to_byte(
+        text,
+        entity.offset.saturating_add(entity.length).max(0) as usize,
+    )
+    .unwrap_or(text.len());
+
+    text.get(start..end)?.strip_prefix('@')
+}
+
+fn utf16_to_byte(text: &str, target: usize) -> Option<usize> {
+    let mut units = 0;
+
+    for (byte_idx, ch) in text.char_indices() {
+        if units == target {
+            return Some(byte_idx);
+        }
+        units += ch.len_utf16();
+        if units > target {
+            return None;
+        }
+    }
+
+    (units == target).then_some(text.len())
 }
 
 fn display_name(user: &User) -> String {
@@ -346,6 +461,24 @@ mod tests {
     use super::*;
     use crate::event::ActorRef;
 
+    const BOT_ID: i64 = 424242;
+    const BOT_USERNAME: &str = "weftic_bot";
+
+    fn bot_me() -> BotMe {
+        BotMe {
+            id: BOT_ID,
+            username: Some(BOT_USERNAME.to_string()),
+        }
+    }
+
+    fn bot_ref() -> BotRef {
+        BotRef {
+            actor: member_ref(Channel::Telegram, "default", &BOT_ID.to_string()),
+            platform_id: BOT_ID.to_string(),
+            username: Some(BOT_USERNAME.to_string()),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn expected(
         kind: PlatformKind,
@@ -354,7 +487,8 @@ mod tests {
         sender_name: &str,
         date_ms: i64,
         edit_ms: Option<i64>,
-        reply_to: Option<&str>,
+        reply_to: Option<ReplyRef>,
+        message_id: &str,
         parts: Vec<Part>,
         dedup_id: &str,
         raw: Value,
@@ -366,17 +500,20 @@ mod tests {
                 target,
                 envelope: Envelope {
                     sender: member_ref(Channel::Telegram, "default", sender_id),
+                    sender_platform_id: sender_id.to_string(),
                     sender_name: Some(sender_name.to_string()),
+                    bot: Some(bot_ref()),
                     thread: None,
                     date: Timestamp::from_millis(date_ms),
                     edit_date: edit_ms.map(Timestamp::from_millis),
-                    reply_to: reply_to.map(|id| MsgRef(id.to_string())),
+                    reply_to,
                     quote: None,
                     forward: None,
                     mentions: vec![],
                     reply_markup: None,
                 },
                 parts,
+                message_id: Some(message_id.to_string()),
                 dedup: Some(DedupKey {
                     platform: Channel::Telegram,
                     platform_event_id: dedup_id.to_string(),
@@ -387,7 +524,7 @@ mod tests {
     }
 
     fn adapter() -> TelegramAdapter {
-        TelegramAdapter::new("default")
+        TelegramAdapter::new("default", &bot_me())
     }
 
     #[test]
@@ -417,6 +554,7 @@ mod tests {
                 1_700_000_000_000,
                 None,
                 None,
+                "5",
                 vec![Part::Text {
                     text: "hello world".to_string(),
                     entities: vec![Entity {
@@ -490,6 +628,7 @@ mod tests {
                 1_700_000_200_000,
                 Some(1_700_000_500_000),
                 None,
+                "7",
                 vec![Part::Text {
                     text: "fixed".to_string(),
                     entities: vec![],
@@ -530,6 +669,7 @@ mod tests {
                 1_700_000_300_000,
                 None,
                 None,
+                "8",
                 vec![Part::Photo {
                     handle: MediaHandle("large".to_string()),
                     caption: Some("look".to_string()),
@@ -541,13 +681,51 @@ mod tests {
     }
 
     #[test]
-    fn reply_message_is_recorded_as_a_message_reference() {
+    fn reply_message_is_recorded_as_a_structured_reference() {
         let payload = json!({
             "update_id": 104,
             "message": {
                 "message_id": 9,
                 "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
                 "date": 1_700_000_400,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "answering",
+                "reply_to_message": {
+                    "message_id": 3,
+                    "from": {"id": 7, "is_bot": false, "first_name": "Quinn"},
+                    "date": 1_700_000_000,
+                    "chat": {"id": 5, "type": "private"},
+                    "text": "question"
+                }
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload.clone());
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(
+            platform.envelope.reply_to,
+            Some(ReplyRef {
+                message_id: "3".to_string(),
+                sender: member_ref(Channel::Telegram, "default", "7"),
+                sender_name: "Quinn".to_string(),
+                sender_platform_id: "7".to_string(),
+                snippet: Some("question".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn reply_without_a_resolvable_sender_degrades_to_no_reference() {
+        let payload = json!({
+            "update_id": 109,
+            "message": {
+                "message_id": 13,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_000_800,
                 "chat": {"id": 5, "type": "private", "first_name": "Dee"},
                 "text": "answering",
                 "reply_to_message": {
@@ -565,7 +743,30 @@ mod tests {
         let EventOrigin::Platform(platform) = &events[0].origin else {
             panic!("expected a platform event");
         };
-        assert_eq!(platform.envelope.reply_to, Some(MsgRef("3".to_string())));
+        assert_eq!(platform.envelope.reply_to, None);
+    }
+
+    #[test]
+    fn reply_snippet_uses_a_placeholder_for_media_without_text() {
+        let replied: Message = serde_json::from_value(json!({
+            "message_id": 1,
+            "date": 0,
+            "chat": {"id": 1, "type": "private"},
+            "photo": [{"file_id": "f", "width": 1, "height": 1}]
+        }))
+        .unwrap();
+
+        assert_eq!(reply_snippet(&replied), Some("[photo]".to_string()));
+    }
+
+    #[test]
+    fn reply_snippet_is_bounded_by_character_count() {
+        let long = "a".repeat(REPLY_SNIPPET_MAX_CHARS + 10);
+
+        assert_eq!(
+            truncate_chars(&long, REPLY_SNIPPET_MAX_CHARS),
+            format!("{}…", "a".repeat(REPLY_SNIPPET_MAX_CHARS))
+        );
     }
 
     #[test]
@@ -620,11 +821,183 @@ mod tests {
         assert_eq!(
             platform.envelope.mentions,
             vec![Mention {
-                actor: ActorRef::new("member_0cfb80403eaf3ae6"),
+                actor: Some(ActorRef::new("member_0cfb80403eaf3ae6")),
+                platform_id: Some("999".to_string()),
+                username: None,
                 name: "Bot".to_string(),
                 is_bot: true,
+                is_self: false,
             }]
         );
+    }
+
+    #[test]
+    fn the_event_carries_the_bot_identity() {
+        let payload = json!({
+            "update_id": 111,
+            "message": {
+                "message_id": 15,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_000,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "hello"
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(platform.envelope.bot, Some(bot_ref()));
+    }
+
+    #[test]
+    fn the_event_carries_its_own_message_id() {
+        let payload = json!({
+            "update_id": 115,
+            "message": {
+                "message_id": 21,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_400,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "hello"
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        // The message id is its own fact, distinct from the update id in `dedup`.
+        assert_eq!(platform.message_id.as_deref(), Some("21"));
+        assert_eq!(
+            platform
+                .dedup
+                .as_ref()
+                .map(|dedup| dedup.platform_event_id.as_str()),
+            Some("115")
+        );
+    }
+
+    #[test]
+    fn mentioning_the_bot_marks_the_mention_as_self() {
+        let payload = json!({
+            "update_id": 110,
+            "message": {
+                "message_id": 14,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_000_900,
+                "chat": {"id": -1001234567890i64, "type": "supergroup", "title": "Dev"},
+                "text": "@weftic_bot hi",
+                "entities": [
+                    {"type": "text_mention", "offset": 0, "length": 11,
+                     "user": {"id": 424242, "is_bot": true, "first_name": "Weftic", "username": "weftic_bot"}}
+                ]
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        let mention = &platform.envelope.mentions[0];
+        assert_eq!(mention.platform_id.as_deref(), Some("424242"));
+        assert_eq!(mention.username.as_deref(), Some("weftic_bot"));
+        assert!(mention.is_self);
+    }
+
+    #[test]
+    fn a_plain_username_mention_is_captured_and_the_bot_is_marked_self() {
+        let payload = json!({
+            "update_id": 112,
+            "message": {
+                "message_id": 16,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_100,
+                "chat": {"id": -1001234567890i64, "type": "supergroup", "title": "Dev"},
+                "text": "hey @weftic_bot please",
+                "entities": [{"type": "mention", "offset": 4, "length": 11}]
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(
+            platform.envelope.mentions,
+            vec![Mention {
+                actor: None,
+                platform_id: None,
+                username: Some("weftic_bot".to_string()),
+                name: "weftic_bot".to_string(),
+                is_bot: false,
+                is_self: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_plain_username_mention_of_someone_else_is_not_self() {
+        let payload = json!({
+            "update_id": 113,
+            "message": {
+                "message_id": 17,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_200,
+                "chat": {"id": -1001234567890i64, "type": "supergroup", "title": "Dev"},
+                "text": "cc @alice",
+                "entities": [{"type": "mention", "offset": 3, "length": 6}]
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        let mention = &platform.envelope.mentions[0];
+        assert_eq!(mention.username.as_deref(), Some("alice"));
+        assert_eq!(mention.platform_id, None);
+        assert!(!mention.is_self);
+    }
+
+    #[test]
+    fn mention_offsets_are_utf16_code_units() {
+        // The emoji is one char but two UTF-16 code units, so `@weftic_bot`
+        // starts at code unit 3 — not at byte / char offset 2.
+        let payload = json!({
+            "update_id": 114,
+            "message": {
+                "message_id": 18,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_300,
+                "chat": {"id": -1001234567890i64, "type": "supergroup", "title": "Dev"},
+                "text": "\u{1F44D} @weftic_bot",
+                "entities": [{"type": "mention", "offset": 3, "length": 11}]
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(
+            platform.envelope.mentions[0].username.as_deref(),
+            Some("weftic_bot")
+        );
+        assert!(platform.envelope.mentions[0].is_self);
     }
 
     #[test]

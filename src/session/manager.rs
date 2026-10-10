@@ -8,6 +8,7 @@ use genai::chat::ChatMessage;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::access::Admission;
 use crate::agent_engine::AgentEngine;
 use crate::channel::SessionKey;
 use crate::database::Database;
@@ -32,8 +33,16 @@ pub enum SessionInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IngestOutcome {
-    Turn { event_id: EventId },
-    Duplicate { event_id: EventId },
+    Turn {
+        event_id: EventId,
+    },
+    Duplicate {
+        event_id: EventId,
+    },
+    /// Recorded (for audit/dedup) but the access gate refused to open a turn.
+    Ignored {
+        event_id: EventId,
+    },
 }
 
 #[derive(Clone)]
@@ -90,10 +99,18 @@ impl SessionManager {
         reply: oneshot::Sender<anyhow::Result<()>>,
     ) -> Result<IngestOutcome> {
         let key = session_key_for(&event, &self.agent_id)?;
+        // The gate runs before any turn is created; a denied event is still
+        // recorded below (audit + dedup), it just never reaches a session.
+        let admission = self.resolver.admit(&event);
 
         match self.database.append_event(&event).await? {
             AppendOutcome::Duplicate(event_id) => Ok(IngestOutcome::Duplicate { event_id }),
             AppendOutcome::Appended(event_id) => {
+                if admission == Admission::Denied {
+                    tracing::info!(target: "access", "dropped event for `{key}` (not admitted)");
+                    return Ok(IngestOutcome::Ignored { event_id });
+                }
+
                 let stored = self
                     .database
                     .get_event(event_id)
@@ -252,6 +269,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::access::AccessPolicy;
     use crate::agent_engine::AgentEngine;
     use crate::channel::registry::ChannelRegistry;
     use crate::channel::registry::testing::MockRuntime;
@@ -295,6 +313,7 @@ mod tests {
         Event::platform_text(
             DeliveryTarget::direct(Channel::Webui, "default", target),
             ActorRef::new(LOCAL_SENDER),
+            "webui".to_string(),
             text,
         )
     }
@@ -345,6 +364,7 @@ mod tests {
             templates,
             Arc::new(registry),
             Permissions::default(),
+            AccessPolicy::default(),
         );
 
         SessionManager::new(
@@ -449,6 +469,28 @@ mod tests {
             }
         );
         assert_eq!(model.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_dm_is_dropped_without_a_turn() {
+        let model = ScriptedModel::new(vec![text_events("should not run")]);
+        let manager = session_manager(model.clone()).await;
+
+        let event = Event::platform_text(
+            DeliveryTarget::direct(Channel::Telegram, "default", "999"),
+            ActorRef::new("member_stranger"),
+            "999".to_string(),
+            "hello",
+        );
+        let (reply, _reply_rx) = oneshot::channel();
+
+        let outcome = manager
+            .ingest(event, Arc::new(RecordingSink::default()), reply)
+            .await
+            .unwrap();
+
+        assert!(matches!(outcome, IngestOutcome::Ignored { .. }));
+        assert_eq!(model.requests().len(), 0);
     }
 
     #[tokio::test]

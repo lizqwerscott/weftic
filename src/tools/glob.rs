@@ -61,7 +61,11 @@ impl Tool for GlobTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+    fn call<'a>(
+        &'a self,
+        args: Self::Args,
+        ctx: ToolContext,
+    ) -> super::BoxedFuture<'a, anyhow::Result<String>> {
         Box::pin(async move { tokio::task::spawn_blocking(move || glob_dir(args, ctx)).await? })
     }
 }

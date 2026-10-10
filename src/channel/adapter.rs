@@ -92,6 +92,7 @@ mod tests {
         Event::platform_text(
             DeliveryTarget::direct(Channel::Webui, "default", target),
             ActorRef::new("member_webui"),
+            "webui".to_string(),
             text,
         )
     }

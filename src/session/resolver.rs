@@ -3,9 +3,11 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::access::{AccessPolicy, Admission};
 use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
 use crate::channel::registry::ChannelRegistry;
 use crate::channel::{Channel, ChannelChatType, DeliveryTarget, SessionKey};
+use crate::event::Event;
 use crate::permissions::{Mode, Permissions, Role};
 use crate::session::ChannelBinding;
 use crate::session::spec::SessionSpec;
@@ -16,6 +18,7 @@ pub struct SessionResolver {
     channel_templates: HashMap<Channel, String>,
     registry: Arc<ChannelRegistry>,
     permissions: Permissions,
+    access: AccessPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -43,13 +46,21 @@ impl SessionResolver {
         channel_templates: HashMap<Channel, String>,
         registry: Arc<ChannelRegistry>,
         permissions: Permissions,
+        access: AccessPolicy,
     ) -> Self {
         Self {
             workspace_base,
             channel_templates,
             registry,
             permissions,
+            access,
         }
+    }
+
+    /// The access gate: whether this inbound event may open a turn at all.
+    /// Runs before a session is created (`SessionManager::ingest`).
+    pub fn admit(&self, event: &Event) -> Admission {
+        self.access.decide(event)
     }
 
     pub fn spec_for(&self, key: &SessionKey) -> Result<SessionSpec, ResolveError> {
@@ -122,9 +133,10 @@ impl SessionResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::AccessPolicy;
     use crate::channel::DeliveryTarget;
     use crate::channel::registry::testing::MockRuntime;
-    use crate::channel::telegram::client::TelegramClient;
+    use crate::channel::telegram::client::{BotMe, TelegramClient};
     use crate::channel::telegram::runtime::TelegramRuntime;
 
     fn resolver() -> SessionResolver {
@@ -139,6 +151,10 @@ mod tests {
             Arc::new(TelegramRuntime::new(
                 Arc::new(TelegramClient::new("token")),
                 "default",
+                BotMe {
+                    id: 1,
+                    username: None,
+                },
                 3,
             )),
         );
@@ -152,6 +168,7 @@ mod tests {
             channel_templates,
             Arc::new(registry),
             permissions,
+            AccessPolicy::default(),
         )
     }
 

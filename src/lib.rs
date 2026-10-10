@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use crate::{
@@ -12,6 +12,7 @@ use crate::{
     config::{Config, channel::DEFAULT_MAX_SEND_ATTEMPTS},
 };
 
+pub mod access;
 pub mod agent_engine;
 pub mod channel;
 pub mod config;
@@ -26,7 +27,7 @@ pub mod system_prompt;
 pub mod tools;
 mod workspace;
 
-pub fn registry_channels(config: &Config) -> Result<Arc<ChannelRegistry>> {
+pub async fn registry_channels(config: &Config) -> Result<Arc<ChannelRegistry>> {
     let mut registry = ChannelRegistry::new();
 
     if config.is_channel_enabled("telegram") {
@@ -37,9 +38,13 @@ pub fn registry_channels(config: &Config) -> Result<Arc<ChannelRegistry>> {
                 .map(|channel| channel.max_send_attempts)
                 .unwrap_or(DEFAULT_MAX_SEND_ATTEMPTS);
             let client = Arc::new(TelegramClient::new(token));
+            let bot = client
+                .get_me()
+                .await
+                .context("fetching the telegram bot identity")?;
             registry.register(
                 Channel::Telegram,
-                Arc::new(TelegramRuntime::new(client, "default", attempts)),
+                Arc::new(TelegramRuntime::new(client, "default", bot, attempts)),
             );
             info!(target: "telegram", "channel registered (account `default`)");
         } else {

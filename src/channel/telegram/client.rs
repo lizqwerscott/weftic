@@ -44,6 +44,15 @@ impl TelegramClient {
             })
     }
 
+    /// The bot's own account, as reported by `getMe`.
+    pub async fn get_me(&self) -> Result<BotMe> {
+        let body = self.get("getMe", &[]).await?;
+
+        Envelope::<BotMe>::decode("getMe", &body)?
+            .into_result("getMe")?
+            .ok_or_else(|| anyhow!("telegram getMe returned no result"))
+    }
+
     /// GET a method with query parameters and return the raw body.
     pub async fn get(&self, method: &str, query: &[(&str, String)]) -> Result<String> {
         self.http
@@ -61,6 +70,13 @@ impl TelegramClient {
                 )
             })
     }
+}
+
+/// The bot's own account, as reported by `getMe`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BotMe {
+    pub id: i64,
+    pub username: Option<String>,
 }
 
 /// The `{ ok, description, result }` envelope every Bot API method returns.

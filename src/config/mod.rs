@@ -6,6 +6,7 @@ use figment::{
     providers::{Format, Toml},
 };
 
+use crate::access::AccessPolicy;
 use crate::config::{
     channel::ChannelConfig,
     engine::EngineConfig,
@@ -30,6 +31,7 @@ pub struct Config {
     pub engine: EngineConfig,
     pub storage: StorageConfig,
     pub permissions: Permissions,
+    pub access: AccessPolicy,
     pub workspace: WorkspaceConfig,
 }
 
@@ -69,6 +71,12 @@ impl Config {
             Permissions::default()
         };
 
+        let access = if app_config.contains("access") {
+            app_config.extract_inner("access")?
+        } else {
+            AccessPolicy::default()
+        };
+
         Ok(Self {
             model_register,
             system_prompt: app_config.extract_inner("system_prompt")?,
@@ -76,6 +84,7 @@ impl Config {
             engine,
             storage,
             permissions,
+            access,
             workspace: app_config.extract_inner("workspace")?,
         })
     }

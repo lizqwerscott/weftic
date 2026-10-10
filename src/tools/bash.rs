@@ -68,7 +68,11 @@ impl Tool for BashTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+    fn call<'a>(
+        &'a self,
+        args: Self::Args,
+        ctx: ToolContext,
+    ) -> super::BoxedFuture<'a, anyhow::Result<String>> {
         Box::pin(async move { bash(args, ctx).await })
     }
 }

@@ -61,7 +61,11 @@ impl Tool for MessageTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args, _ctx: ToolContext) -> super::BoxedFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        args: Self::Args,
+        _ctx: ToolContext,
+    ) -> super::BoxedFuture<'a, Result<String>> {
         Box::pin(async move {
             let text = args.text.unwrap_or_default();
             if text.is_empty() {

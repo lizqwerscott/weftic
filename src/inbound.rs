@@ -97,6 +97,7 @@ mod tests {
         let mut event = Event::platform_text(
             DeliveryTarget::direct(Channel::Telegram, "default", "123"),
             ActorRef::new("member_abc"),
+            "123".to_string(),
             text,
         );
 

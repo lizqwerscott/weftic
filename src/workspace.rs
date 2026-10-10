@@ -64,9 +64,9 @@ impl Workspace {
             Confinement::ExtraRoots(extra) => {
                 let mut roots = vec![root.clone()];
                 for path in extra {
-                    let extra = path.canonicalize().with_context(|| {
-                        format!("resolving workspace root {}", path.display())
-                    })?;
+                    let extra = path
+                        .canonicalize()
+                        .with_context(|| format!("resolving workspace root {}", path.display()))?;
                     roots.push(extra);
                 }
                 (dedupe_roots(roots), false)
@@ -204,7 +204,10 @@ mod tests {
 
         assert_eq!(
             error,
-            format!("path escapes workspace: {}", ws.cwd().parent().unwrap().join("outside.txt").display())
+            format!(
+                "path escapes workspace: {}",
+                ws.cwd().parent().unwrap().join("outside.txt").display()
+            )
         );
     }
 
@@ -214,7 +217,10 @@ mod tests {
 
         let error = ws.resolve("/etc/hosts").unwrap_err().to_string();
 
-        assert!(error.contains("escapes workspace"), "unexpected error: {error}");
+        assert!(
+            error.contains("escapes workspace"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

@@ -19,5 +19,14 @@ dir = "./data"
 # Owner allowlist: `(channel, user id)` entries that get full permissions.
 # owner = ["telegram:123456"]
 
+[access]
+# Who may open a DM (principal = `channel:user_id`). Default empty = no one.
+dm_allow = ["telegram:123456"]
+# Groups the bot answers in. Default empty = no group is answered; a group
+# message still needs to @ the bot / reply to it / be a `/command`.
+# [[access.groups]]
+# id = "telegram:-1001234567890"
+# deny = ["telegram:999"]
+
 [system_prompt]
 character_path = "./characters/default.md"

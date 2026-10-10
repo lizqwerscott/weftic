@@ -70,7 +70,11 @@ impl Tool for ReadTool {
         })
     }
 
-    fn call<'a>(&'a self, args: ReadToolArgs, ctx: ToolContext) -> super::BoxedFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        args: ReadToolArgs,
+        ctx: ToolContext,
+    ) -> super::BoxedFuture<'a, Result<String>> {
         Box::pin(async move { tokio::task::spawn_blocking(move || read_file(args, ctx)).await? })
     }
 }
@@ -224,7 +228,11 @@ impl Tool for WriteTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+    fn call<'a>(
+        &'a self,
+        args: Self::Args,
+        ctx: ToolContext,
+    ) -> super::BoxedFuture<'a, anyhow::Result<String>> {
         Box::pin(async move { tokio::task::spawn_blocking(move || write_file(args, ctx)).await? })
     }
 }
@@ -309,7 +317,11 @@ impl Tool for EditTool {
         })
     }
 
-    fn call<'a>(&'a self, args: Self::Args, ctx: ToolContext) -> super::BoxedFuture<'a, anyhow::Result<String>> {
+    fn call<'a>(
+        &'a self,
+        args: Self::Args,
+        ctx: ToolContext,
+    ) -> super::BoxedFuture<'a, anyhow::Result<String>> {
         Box::pin(async move { tokio::task::spawn_blocking(move || edit_file(args, ctx)).await? })
     }
 }

@@ -7,13 +7,14 @@ use crate::channel::DeliveryTarget;
 use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
 use crate::channel::registry::{ChannelRuntime, InboundDriver};
 use crate::channel::sender::ChannelSender;
-use crate::channel::telegram::client::TelegramClient;
+use crate::channel::telegram::client::{BotMe, TelegramClient};
 use crate::channel::telegram::poll::TelegramPoller;
 use crate::channel::telegram::send::TelegramSender;
 
 pub struct TelegramRuntime {
     client: Arc<TelegramClient>,
     account_id: String,
+    bot: BotMe,
     max_attempts: u32,
 }
 
@@ -21,11 +22,13 @@ impl TelegramRuntime {
     pub fn new(
         client: Arc<TelegramClient>,
         account_id: impl Into<String>,
+        bot: BotMe,
         max_attempts: u32,
     ) -> Self {
         Self {
             client,
             account_id: account_id.into(),
+            bot,
             max_attempts,
         }
     }
@@ -48,6 +51,7 @@ impl ChannelRuntime for TelegramRuntime {
         Some(Arc::new(TelegramPoller::new(
             self.client.clone(),
             self.account_id.clone(),
+            &self.bot,
         )))
     }
 }
@@ -57,8 +61,15 @@ mod tests {
     use super::*;
     use crate::channel::Channel;
 
+    fn bot() -> BotMe {
+        BotMe {
+            id: 1,
+            username: None,
+        }
+    }
+
     fn runtime() -> TelegramRuntime {
-        TelegramRuntime::new(Arc::new(TelegramClient::new("token")), "default", 3)
+        TelegramRuntime::new(Arc::new(TelegramClient::new("token")), "default", bot(), 3)
     }
 
     #[test]

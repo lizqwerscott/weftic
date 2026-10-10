@@ -17,6 +17,7 @@ impl Event {
     pub fn platform_text(
         target: DeliveryTarget,
         sender: ActorRef,
+        sender_id: String,
         text: impl Into<String>,
     ) -> Self {
         Self {
@@ -26,7 +27,9 @@ impl Event {
                 target,
                 envelope: Envelope {
                     sender,
+                    sender_platform_id: sender_id,
                     sender_name: None,
+                    bot: None,
                     thread: None,
                     date: Timestamp::now(),
                     edit_date: None,
@@ -36,6 +39,7 @@ impl Event {
                     mentions: vec![],
                     reply_markup: None,
                 },
+                message_id: None,
                 parts: vec![Part::Text {
                     text: text.into(),
                     entities: vec![],
@@ -59,6 +63,9 @@ pub struct PlatformEvent {
     pub target: DeliveryTarget,
     pub envelope: Envelope,
     pub parts: Vec<Part>,
+    /// This message's own platform id — distinct from the dedup `update_id`.
+    #[serde(default)]
+    pub message_id: Option<String>,
     pub dedup: Option<DedupKey>,
     pub raw: Option<serde_json::Value>,
 }
@@ -121,11 +128,13 @@ pub struct CorrelationId(pub String);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
     pub sender: ActorRef,
+    pub sender_platform_id: String,
     pub sender_name: Option<String>,
+    pub bot: Option<BotRef>,
     pub thread: Option<String>,
     pub date: Timestamp,
     pub edit_date: Option<Timestamp>,
-    pub reply_to: Option<MsgRef>,
+    pub reply_to: Option<ReplyRef>,
     pub quote: Option<Quote>,
     pub forward: Option<ForwardOrigin>,
     pub mentions: Vec<Mention>,
@@ -146,7 +155,20 @@ impl ActorRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MsgRef(pub String);
+pub struct ReplyRef {
+    pub message_id: String,
+    pub sender: ActorRef,
+    pub sender_name: String,
+    pub sender_platform_id: String,
+    pub snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BotRef {
+    pub actor: ActorRef,
+    pub platform_id: String,
+    pub username: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Quote {
@@ -161,9 +183,12 @@ pub struct ForwardOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Mention {
-    pub actor: ActorRef,
+    pub actor: Option<ActorRef>,
+    pub platform_id: Option<String>,
+    pub username: Option<String>,
     pub name: String,
     pub is_bot: bool,
+    pub is_self: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -245,7 +270,9 @@ mod tests {
                 target: DeliveryTarget::direct(Channel::Webui, "default", "webui"),
                 envelope: Envelope {
                     sender: ActorRef::new("member_0a1b"),
+                    sender_platform_id: "webui".to_string(),
                     sender_name: None,
+                    bot: None,
                     thread: None,
                     date: Timestamp::from_millis(1_700_000_000_000),
                     edit_date: None,
@@ -259,6 +286,7 @@ mod tests {
                     text: text.to_string(),
                     entities: vec![],
                 }],
+                message_id: None,
                 dedup: None,
                 raw: None,
             })),
