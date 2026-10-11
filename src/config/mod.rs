@@ -8,7 +8,7 @@ use figment::{
 
 use crate::access::AccessPolicy;
 use crate::config::{
-    channel::ChannelConfig,
+    channel::{ChannelConfig, ChannelTemplates},
     engine::EngineConfig,
     model_provider::{ModelRegister, load_model_config},
     storage::StorageConfig,
@@ -89,13 +89,13 @@ impl Config {
         })
     }
 
-    pub fn channel_templates(&self) -> Result<HashMap<Channel, String>> {
+    pub fn channel_templates(&self) -> Result<HashMap<Channel, ChannelTemplates>> {
         self.channels
             .iter()
             .map(|(name, config)| {
                 let channel = Channel::parse(name)
                     .ok_or_else(|| anyhow!("unknown channel `{name}` in [channels]"))?;
-                Ok((channel, config.template.clone()))
+                Ok((channel, config.templates()))
             })
             .collect()
     }

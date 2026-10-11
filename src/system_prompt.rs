@@ -51,6 +51,15 @@ impl SystemPromptManager {
                 .with_context(|| format!("compiling prompt template {}", path.display()))?;
         }
 
+        // A shared, channel-agnostic protocol section env templates include.
+        let base_path = prompt_dir_path.join("base.j2");
+        if base_path.exists() {
+            let base = fs::read_to_string(&base_path)
+                .with_context(|| format!("reading prompt template {}", base_path.display()))?;
+            env.add_template_owned("base.j2".to_string(), base)
+                .with_context(|| format!("compiling prompt template {}", base_path.display()))?;
+        }
+
         Ok(Self { env, character })
     }
 
@@ -93,5 +102,27 @@ mod tests {
     #[test]
     fn empty_names_are_rejected() {
         assert!(!is_valid_template_name(""));
+    }
+
+    #[test]
+    fn group_and_direct_templates_include_the_shared_base() {
+        let config = SystemPromptConfig {
+            character_path: std::path::PathBuf::from("./characters/default.md"),
+        };
+        let manager = SystemPromptManager::new(
+            &config,
+            ["telegram_group".to_string(), "telegram_direct".to_string()],
+        )
+        .unwrap();
+
+        let group = manager.render("telegram_group", &[]).unwrap();
+        let direct = manager.render("telegram_direct", &[]).unwrap();
+
+        assert!(group.contains("群聊"), "{group}");
+        assert!(direct.contains("私聊"), "{direct}");
+        // The shared `base.j2` reached both through the include.
+        assert!(group.contains("media://inbound"), "{group}");
+        assert!(direct.contains("media://inbound"), "{direct}");
+        assert_ne!(group, direct);
     }
 }

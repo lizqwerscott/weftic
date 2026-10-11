@@ -5,7 +5,9 @@ base = "./data/workspaces/"
 # Telegram(token 支持 <ENV_NAME> 占位符)
 [channels.telegram]
 enabled = true
-template = "telegram"
+# One prompt template per chat type (see prompts/<name>.j2).
+template_group = "telegram_group"
+template_direct = "telegram_direct"
 token = "<TELEGRAM_BOT_TOKEN>"
 max_send_attempts = 3
 

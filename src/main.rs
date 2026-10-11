@@ -49,8 +49,12 @@ async fn main() -> Result<()> {
 
     let channel_templates = config.channel_templates()?;
 
-    let system_prompt_manager =
-        SystemPromptManager::new(&config.system_prompt, channel_templates.values().cloned())?;
+    let system_prompt_manager = SystemPromptManager::new(
+        &config.system_prompt,
+        channel_templates
+            .values()
+            .flat_map(|templates| templates.names().map(str::to_string)),
+    )?;
 
     let engine = Arc::new(AgentEngine::new(
         model,

@@ -7,6 +7,7 @@ use crate::access::{AccessPolicy, Admission};
 use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
 use crate::channel::registry::ChannelRegistry;
 use crate::channel::{Channel, ChannelChatType, DeliveryTarget, SessionKey};
+use crate::config::channel::ChannelTemplates;
 use crate::event::Event;
 use crate::media::MediaFetcher;
 use crate::permissions::{Mode, Permissions, Role};
@@ -16,7 +17,7 @@ use crate::workspace::WorkspacePolicy;
 
 pub struct SessionResolver {
     workspace_base: PathBuf,
-    channel_templates: HashMap<Channel, String>,
+    channel_templates: HashMap<Channel, ChannelTemplates>,
     registry: Arc<ChannelRegistry>,
     permissions: Permissions,
     access: AccessPolicy,
@@ -44,7 +45,7 @@ impl std::error::Error for ResolveError {}
 impl SessionResolver {
     pub fn new(
         workspace_base: PathBuf,
-        channel_templates: HashMap<Channel, String>,
+        channel_templates: HashMap<Channel, ChannelTemplates>,
         registry: Arc<ChannelRegistry>,
         permissions: Permissions,
         access: AccessPolicy,
@@ -79,7 +80,8 @@ impl SessionResolver {
             .channel_templates
             .get(&channel)
             .ok_or(ResolveError::UnconfiguredChannel { channel })?
-            .clone();
+            .for_chat_type(target.chat_type())
+            .to_string();
 
         let role = self.role_for(&target);
         let mode = match role {
@@ -147,8 +149,8 @@ mod tests {
 
     fn resolver() -> SessionResolver {
         let mut channel_templates = HashMap::new();
-        channel_templates.insert(Channel::Webui, "agent".to_string());
-        channel_templates.insert(Channel::Telegram, "telegram".to_string());
+        channel_templates.insert(Channel::Webui, ChannelTemplates::uniform("agent"));
+        channel_templates.insert(Channel::Telegram, ChannelTemplates::uniform("telegram"));
 
         let mut registry = ChannelRegistry::new();
         registry.register(Channel::Webui, MockRuntime::live());

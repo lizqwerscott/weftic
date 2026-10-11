@@ -270,6 +270,7 @@ mod tests {
     use crate::channel::registry::{ChannelRegistry, ChannelRuntime};
     use crate::channel::sender::ChannelSender;
     use crate::channel::sender::testing::{MockChannelSender, MockMessage};
+    use crate::config::channel::ChannelTemplates;
     use crate::config::model_provider::testing::{ScriptedModel, text_events, tool_call_events};
     use crate::config::system_prompt::SystemPromptConfig;
     use crate::database::Database;
@@ -461,8 +462,11 @@ mod tests {
         let config = SystemPromptConfig {
             character_path: PathBuf::from("./characters/default.md"),
         };
-        let system_prompt_manager =
-            SystemPromptManager::new(&config, ["telegram".to_string()]).unwrap();
+        let system_prompt_manager = SystemPromptManager::new(
+            &config,
+            ["telegram_group".to_string(), "telegram_direct".to_string()],
+        )
+        .unwrap();
 
         let mut tool_router = ToolRouter::new();
         tool_router.register_builtin_tools().unwrap();
@@ -478,7 +482,13 @@ mod tests {
         ));
 
         let mut templates = HashMap::new();
-        templates.insert(Channel::Telegram, "telegram".to_string());
+        templates.insert(
+            Channel::Telegram,
+            ChannelTemplates {
+                group: "telegram_group".to_string(),
+                direct: "telegram_direct".to_string(),
+            },
+        );
 
         let mut registry = ChannelRegistry::new();
         registry.register(

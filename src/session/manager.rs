@@ -342,6 +342,7 @@ mod tests {
     use crate::channel::registry::ChannelRegistry;
     use crate::channel::registry::testing::MockRuntime;
     use crate::channel::{Channel, DeliveryTarget};
+    use crate::config::channel::ChannelTemplates;
     use crate::config::model_provider::testing::{ScriptedModel, text_events};
     use crate::config::system_prompt::SystemPromptConfig;
     use crate::event::{ActorRef, DedupKey, Media, MediaHandle, Part};
@@ -408,8 +409,9 @@ mod tests {
         let config = SystemPromptConfig {
             character_path: PathBuf::from("./characters/default.md"),
         };
+        // Any loadable template works for these flow tests.
         let system_prompt_manager =
-            SystemPromptManager::new(&config, ["agent".to_string()]).unwrap();
+            SystemPromptManager::new(&config, ["telegram_direct".to_string()]).unwrap();
 
         let mut tool_router = ToolRouter::new();
         tool_router.register_builtin_tools().unwrap();
@@ -426,7 +428,7 @@ mod tests {
         ));
 
         let mut templates = HashMap::new();
-        templates.insert(Channel::Webui, "agent".to_string());
+        templates.insert(Channel::Webui, ChannelTemplates::uniform("telegram_direct"));
 
         let mut registry = ChannelRegistry::new();
         registry.register(Channel::Webui, MockRuntime::live());
