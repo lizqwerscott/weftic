@@ -173,6 +173,12 @@ impl AgentEngine {
                 .clone()
                 .append_messages(state.steps.messages.clone());
 
+            tracing::trace!(
+                target: "engine",
+                "chat request (iteration {iteration}):\n{}",
+                serde_json::to_string_pretty(&chat_req).unwrap_or_default()
+            );
+
             let mut chat_stream = self
                 .model
                 .stream_chat(chat_req)

@@ -292,6 +292,13 @@ async fn run_session(
                 };
 
                 let carrier = context::carrier(&events, &roster, session.turn_count());
+                if let Some(carrier) = &carrier {
+                    tracing::debug!(
+                        target: "context",
+                        "runtime-context:\n{}",
+                        carrier.content.texts().join("")
+                    );
+                }
 
                 match engine
                     .run_turn(&session, message, carrier, Some(source_event_id), &sink)

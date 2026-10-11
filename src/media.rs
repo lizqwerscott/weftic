@@ -157,11 +157,14 @@ pub async fn ensure_loaded(
             }
 
             match tokio::time::timeout(timeout, fetcher.fetch(&media.handle)).await {
-                Ok(Ok(bytes)) => {
-                    if let Err(error) = store.save(id, &bytes) {
+                Ok(Ok(bytes)) => match store.save(id, &bytes) {
+                    Ok(()) => {
+                        tracing::debug!(target: "media", "stored {uri} ({} bytes)", bytes.len());
+                    }
+                    Err(error) => {
                         tracing::warn!(target: "media", "storing {uri} failed: {error:#}");
                     }
-                }
+                },
                 Ok(Err(error)) => {
                     tracing::warn!(target: "media", "fetching {uri} failed: {error:#}");
                 }
