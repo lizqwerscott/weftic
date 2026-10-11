@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
     config.model_register.print_info();
 
     let model: Arc<dyn ChatModel> = Arc::new(config.model_register.resolve()?);
+    config.model_register.check_health().await?;
 
     let mut tool_router = ToolRouter::new();
     tool_router.register_builtin_tools()?;
