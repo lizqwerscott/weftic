@@ -7,6 +7,7 @@ use genai::chat::ChatMessage;
 use time::OffsetDateTime;
 use time::macros::format_description;
 
+use crate::channel::ChannelChatType;
 use crate::database::events::StoredEvent;
 use crate::event::{
     ActorRef, Envelope, EventId, EventOrigin, ExternalReply, Part, PlatformEvent, PlatformKind,
@@ -25,8 +26,13 @@ impl Roster {
         Self(names)
     }
 
-    fn name(&self, reference: &ActorRef) -> Option<&str> {
+    pub(crate) fn name(&self, reference: &ActorRef) -> Option<&str> {
         self.0.get(reference).map(String::as_str)
+    }
+
+    /// Every `ref → current name` pair, for the runtime-context roster.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&ActorRef, &str)> {
+        self.0.iter().map(|(actor, name)| (actor, name.as_str()))
     }
 }
 
@@ -49,6 +55,13 @@ pub fn sender_refs(events: &[StoredEvent]) -> Vec<ActorRef> {
 }
 
 pub fn project(events: &[StoredEvent], roster: &Roster) -> Projected {
+    // A direct chat's sender is constant, so its block header is slimmed and the
+    // peer identity rides in the runtime-context carrier instead (§11.2).
+    let direct = events
+        .iter()
+        .find_map(content_platform)
+        .is_some_and(|platform| platform.target.chat_type() == ChannelChatType::Direct);
+
     let mut blocks: Vec<Block> = Vec::new();
 
     for stored in events {
@@ -56,7 +69,7 @@ pub fn project(events: &[StoredEvent], roster: &Roster) -> Projected {
             continue;
         };
 
-        let current = block(stored, platform, roster);
+        let current = block(stored, platform, roster, direct);
 
         if let Some(last) = blocks.last_mut()
             && last.can_merge(&current)
@@ -94,6 +107,8 @@ struct Block {
     from: ActorRef,
     name: Option<String>,
     is_self: bool,
+    /// A direct chat slims the header to `id` + `t`.
+    direct: bool,
     millis: i64,
     /// The latest message folded into this block, for the merge window.
     last_millis: i64,
@@ -124,7 +139,7 @@ impl Block {
     }
 }
 
-fn block(stored: &StoredEvent, platform: &PlatformEvent, roster: &Roster) -> Block {
+fn block(stored: &StoredEvent, platform: &PlatformEvent, roster: &Roster, direct: bool) -> Block {
     let envelope = &platform.envelope;
     let (body, has_media) = body_lines(&platform.parts);
     let reply = reply_line(envelope);
@@ -138,6 +153,7 @@ fn block(stored: &StoredEvent, platform: &PlatformEvent, roster: &Roster) -> Blo
             .or(envelope.sender_name.as_deref())
             .map(str::to_string),
         is_self: is_self(envelope),
+        direct,
         millis,
         last_millis: millis,
         mergeable: reply.is_none() && !has_media,
@@ -258,17 +274,21 @@ fn render(blocks: &[Block]) -> String {
 }
 
 fn header(block: &Block) -> String {
-    let mut attributes = vec![
-        format!("id=\"m{}\"", block.event_id.0),
-        format!("from=\"{}\"", escape_attr(block.from.as_str())),
-    ];
+    let mut attributes = vec![format!("id=\"m{}\"", block.event_id.0)];
 
-    if let Some(name) = &block.name {
-        attributes.push(format!("name=\"{}\"", escape_attr(name)));
+    if !block.direct {
+        attributes.push(format!("from=\"{}\"", escape_attr(block.from.as_str())));
+
+        if let Some(name) = &block.name {
+            attributes.push(format!("name=\"{}\"", escape_attr(name)));
+        }
     }
 
     attributes.push(format!("t=\"{}\"", format_time(block.millis)));
-    attributes.push(format!("self=\"{}\"", block.is_self));
+
+    if !block.direct {
+        attributes.push(format!("self=\"{}\"", block.is_self));
+    }
 
     format!("<msg {}>", attributes.join(" "))
 }
@@ -284,7 +304,7 @@ fn format_time(millis: i64) -> String {
         .unwrap_or_else(|_| "--:--:--".to_string())
 }
 
-fn escape_text(text: &str) -> String {
+pub(crate) fn escape_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -313,7 +333,7 @@ mod tests {
 
     fn text_event(text: &str, at_ms: i64) -> Event {
         let mut event = Event::platform_text(
-            DeliveryTarget::direct(Channel::Telegram, "default", "1"),
+            DeliveryTarget::group(Channel::Telegram, "default", "-100"),
             ActorRef::new("member_a"),
             "1".to_string(),
             text,
@@ -363,6 +383,19 @@ mod tests {
             content(&projected),
             "<msg id=\"m1\" from=\"member_a\" name=\"Ali\" t=\"22:13:20\" self=\"false\">\nhi"
         );
+    }
+
+    #[test]
+    fn a_direct_header_is_slimmed_to_id_and_time() {
+        let mut event = text_event("hi", 1_700_000_000_000);
+        let EventOrigin::Platform(platform) = &mut event.origin else {
+            panic!("helper must build a platform event");
+        };
+        platform.target = DeliveryTarget::direct(Channel::Telegram, "default", "1");
+
+        let projected = project(&[stored(1, event)], &roster(&[("member_a", "Ali")]));
+
+        assert_eq!(content(&projected), "<msg id=\"m1\" t=\"22:13:20\">\nhi");
     }
 
     #[test]

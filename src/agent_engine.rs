@@ -41,6 +41,9 @@ struct TurnMeta {
 struct TurnState<'a> {
     system: String,
     history: &'a ChatRequest,
+    /// The turn's hidden `runtime-context` carrier, inserted before the batch
+    /// but kept out of `steps` so it is never persisted.
+    carrier: Option<ChatMessage>,
     steps: ChatRequest,
     sink: &'a Arc<dyn OutputSink>,
     meta: TurnMeta,
@@ -94,6 +97,7 @@ impl AgentEngine {
         &self,
         session: &Session,
         input: ChatMessage,
+        carrier: Option<ChatMessage>,
         source_event_id: Option<EventId>,
         sink: &Arc<dyn OutputSink>,
     ) -> Result<SessionTurn, TurnStartError> {
@@ -119,6 +123,7 @@ impl AgentEngine {
         let mut state = TurnState {
             system,
             history: &history,
+            carrier,
             steps: ChatRequest::default().append_message(input),
             sink,
             meta: TurnMeta::default(),
@@ -150,6 +155,13 @@ impl AgentEngine {
         let chat_req = ChatRequest::from_system(state.system.clone())
             .with_tools(state.router.declarations())
             .append_messages(state.history.messages.clone());
+
+        // The carrier rides after history and before the batch; it never enters
+        // `steps`, so `SessionTurn::new` can never persist it.
+        let chat_req = match &state.carrier {
+            Some(carrier) => chat_req.append_message(carrier.clone()),
+            None => chat_req,
+        };
 
         for iteration in 1..=self.max_iterations {
             let chat_req = chat_req

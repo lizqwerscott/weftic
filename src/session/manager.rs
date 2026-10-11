@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use crate::access::Admission;
 use crate::agent_engine::AgentEngine;
 use crate::channel::SessionKey;
+use crate::context;
 use crate::database::Database;
 use crate::database::events::{AppendOutcome, StoredEvent};
 use crate::event::{Event, EventId, EventOrigin};
@@ -263,8 +264,10 @@ async fn run_session(
                     continue;
                 };
 
+                let carrier = context::carrier(&events, &roster, session.turn_count());
+
                 match engine
-                    .run_turn(&session, message, Some(source_event_id), &sink)
+                    .run_turn(&session, message, carrier, Some(source_event_id), &sink)
                     .await
                 {
                     Ok(turn) => {
@@ -466,6 +469,24 @@ mod tests {
         assert!(second_request.contains("USER_ONE"));
         assert!(second_request.contains("REPLY_ONE"));
         assert!(second_request.contains("USER_TWO"));
+    }
+
+    #[tokio::test]
+    async fn the_runtime_context_carrier_is_turn_scoped() {
+        let model = ScriptedModel::new(vec![text_events("ONE"), text_events("TWO")]);
+        let manager = session_manager(model.clone()).await;
+
+        let (first, _) = enqueue(&manager, event("USER_ONE")).await;
+        assert!(first.await.unwrap().is_ok());
+        let (second, _) = enqueue(&manager, event("USER_TWO")).await;
+        assert!(second.await.unwrap().is_ok());
+
+        // The carrier reaches the model on its own turn...
+        assert!(request_json(&model, 0).contains("turn=\\\"t0\\\""));
+        // ...and is stripped the next turn: it rides outside the persisted steps.
+        let second = request_json(&model, 1);
+        assert!(!second.contains("turn=\\\"t0\\\""), "{second}");
+        assert!(second.contains("turn=\\\"t1\\\""), "{second}");
     }
 
     #[tokio::test]

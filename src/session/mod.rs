@@ -69,6 +69,11 @@ impl Session {
         self.history.to_chat_request()
     }
 
+    /// How many turns this session has completed; the runtime-context turn id.
+    pub fn turn_count(&self) -> usize {
+        self.history.turns.len()
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }
