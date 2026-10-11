@@ -1,13 +1,9 @@
 //! The identity name layer: a ref's current display name plus its rename
-//! history (see `docs/architecture.md` §12).
+//! history.
 //!
-//! Two tables:
-//! - `channel_identities`: one row per ref, the latest name we saw;
-//! - `aliases`: every name ever observed, scoped to `channel` / `chat`.
-//!
-//! Admission never reads this (it is a pure function of the event), and the
-//! projection reads it for the message block header's `name`. A rename goes
-//! through `aliases`; the ref itself never changes.
+//! `channel_identities` holds one row per ref (the latest name); `aliases`
+//! keeps every name ever observed, scoped to `channel` / `chat`, so a rename
+//! accumulates history instead of changing the ref.
 
 use std::collections::HashMap;
 

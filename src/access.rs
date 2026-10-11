@@ -1,13 +1,8 @@
 //! Access gate: who may start a turn at all.
 //!
-//! Default deny — a principal must be listed. Three gates, in order:
-//!
-//! 1. surface allowlist: DMs must be in `dm_allow`, groups in `groups`;
-//! 2. per-group member deny list;
-//! 3. group trigger: only `@bot` / a reply to the bot / a `/command` wakes it.
-//!
-//! A denied message is dropped silently (no refusal text, no turn); the caller
-//! still records it for audit/dedup. See `docs/architecture.md` §6.6.
+//! Default deny — a principal must be listed. A denied message is dropped
+//! silently (no refusal text, no turn); the caller still records it for
+//! audit/dedup.
 
 use serde::Deserialize;
 

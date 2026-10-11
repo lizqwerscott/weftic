@@ -101,6 +101,18 @@ impl TelegramPoller {
             return Ok((offset, Vec::new()));
         }
 
+        debug!(
+            target: "telegram",
+            "poll returned {} update(s): {}",
+            updates.len(),
+            updates
+                .iter()
+                .filter_map(update_id)
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
         let next = next_offset(&updates, offset);
         Ok((next, self.normalize_batch(&updates)))
     }
@@ -285,6 +297,7 @@ mod tests {
         BotMe {
             id: 1,
             username: None,
+            can_read_all_group_messages: false,
         }
     }
 

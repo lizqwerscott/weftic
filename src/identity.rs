@@ -1,5 +1,5 @@
 //! Deterministic opaque identity references: `member_<hex>`, plus the name
-//! facts we observe for a ref (see `docs/architecture.md` §12).
+//! facts we observe for a ref.
 
 use crate::channel::{Channel, ChannelChatType};
 use crate::event::{ActorRef, Event, EventOrigin};
@@ -21,10 +21,8 @@ pub fn member_ref(channel: Channel, account_id: &str, actor_id: &str) -> ActorRe
     ActorRef::new(format!("member_{:016x}", fnv1a(key.as_bytes())))
 }
 
-/// A name observation extracted from an inbound event: which ref it is, and the
-/// display name the platform reported this time. Stored by
-/// `Database::observe_identity`; the projection reads the current name back for
-/// the message block header.
+/// A name observation pulled from an inbound event, stored by
+/// `Database::observe_identity`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedIdentity {
     pub reference: ActorRef,

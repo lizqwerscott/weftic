@@ -22,6 +22,7 @@ pub mod identity;
 pub mod inbound;
 pub mod output;
 pub mod permissions;
+pub mod projection;
 pub mod session;
 pub mod system_prompt;
 pub mod tools;
@@ -42,6 +43,16 @@ pub async fn registry_channels(config: &Config) -> Result<Arc<ChannelRegistry>> 
                 .get_me()
                 .await
                 .context("fetching the telegram bot identity")?;
+
+            if bot.can_read_all_group_messages {
+                info!(target: "telegram", "privacy mode is off: the bot can read all group messages");
+            } else {
+                warn!(
+                    target: "telegram",
+                    "privacy mode is on: only group messages that @ the bot, reply to it, or are /commands are delivered — disable it with BotFather /setprivacy"
+                );
+            }
+
             registry.register(
                 Channel::Telegram,
                 Arc::new(TelegramRuntime::new(client, "default", bot, attempts)),

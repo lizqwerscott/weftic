@@ -182,14 +182,12 @@ impl Envelope {
 }
 
 /// A reply to a message from another chat or forum topic (Telegram
-/// `external_reply`). Unlike `ReplyRef`, the original message is never inlined,
-/// so there is no snippet and the id may be unavailable.
+/// `external_reply`): the original is never inlined, so there is no snippet.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExternalReply {
     /// The replied message's id, when the platform exposes it (supergroup /
     /// channel origins only).
     pub message_id: Option<String>,
-    /// The chat the replied message came from, when the platform exposes it.
     pub chat_id: Option<String>,
     pub origin: ReplyOrigin,
 }

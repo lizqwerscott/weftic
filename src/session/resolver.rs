@@ -154,6 +154,7 @@ mod tests {
                 BotMe {
                     id: 1,
                     username: None,
+                    can_read_all_group_messages: false,
                 },
                 3,
             )),

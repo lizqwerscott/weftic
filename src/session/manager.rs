@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use genai::chat::ChatMessage;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -13,9 +12,10 @@ use crate::agent_engine::AgentEngine;
 use crate::channel::SessionKey;
 use crate::database::Database;
 use crate::database::events::{AppendOutcome, StoredEvent};
-use crate::event::{Event, EventId, EventOrigin, Part};
+use crate::event::{Event, EventId, EventOrigin};
 use crate::identity::ObservedIdentity;
 use crate::output::OutputSink;
+use crate::projection::{self, Projected, Roster};
 use crate::session::Session;
 use crate::session::history::TurnStatus;
 use crate::session::resolver::SessionResolver;
@@ -27,6 +27,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum SessionInput {
     Turn {
         events: Vec<StoredEvent>,
+        roster: Roster,
         sink: Arc<dyn OutputSink>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
@@ -120,10 +121,13 @@ impl SessionManager {
                     .await?
                     .ok_or_else(|| anyhow!("event {event_id:?} vanished right after append"))?;
 
+                let roster = self.roster_for(std::slice::from_ref(&stored)).await;
+
                 self.submit(
                     &key,
                     SessionInput::Turn {
                         events: vec![stored],
+                        roster,
                         sink,
                         reply,
                     },
@@ -144,6 +148,20 @@ impl SessionManager {
 
         if let Err(error) = self.database.observe_identity(&observed).await {
             tracing::warn!(target: "identity", "recording the sender name failed: {error:#}");
+        }
+    }
+
+    /// The current sender names for a batch, as the projection's roster. A
+    /// failed lookup degrades to no names rather than dropping the turn.
+    async fn roster_for(&self, events: &[StoredEvent]) -> Roster {
+        let refs = projection::sender_refs(events);
+
+        match self.database.current_names(&refs).await {
+            Ok(names) => Roster::from_names(names),
+            Err(error) => {
+                tracing::warn!(target: "identity", "resolving sender names failed: {error:#}");
+                Roster::default()
+            }
         }
     }
 
@@ -223,13 +241,30 @@ async fn run_session(
         match input {
             SessionInput::Turn {
                 events,
+                roster,
                 sink,
                 reply,
             } => {
-                let (message, source_event_id) = project(&events);
+                let Projected {
+                    message,
+                    source_event_id,
+                } = projection::project(&events, &roster);
+
+                tracing::debug!(
+                    target: "projection",
+                    "projected message:\n{}",
+                    message.content.texts().join("")
+                );
+
+                // Nothing model-facing in the batch (e.g. a service message):
+                // record it, but do not open a turn.
+                let Some(source_event_id) = source_event_id else {
+                    let _ = reply.send(Ok(()));
+                    continue;
+                };
 
                 match engine
-                    .run_turn(&session, message, source_event_id, &sink)
+                    .run_turn(&session, message, Some(source_event_id), &sink)
                     .await
                 {
                     Ok(turn) => {
@@ -249,32 +284,6 @@ async fn run_session(
             }
         }
     }
-}
-
-fn project(events: &[StoredEvent]) -> (ChatMessage, Option<EventId>) {
-    let mut text = String::new();
-    let mut source_event_id = None;
-
-    for stored in events {
-        let EventOrigin::Platform(platform) = &stored.event.origin else {
-            continue;
-        };
-
-        if source_event_id.is_none() {
-            source_event_id = Some(stored.id);
-        }
-
-        for part in &platform.parts {
-            if let Part::Text { text: chunk, .. } = part {
-                if !text.is_empty() {
-                    text.push('\n');
-                }
-                text.push_str(chunk);
-            }
-        }
-    }
-
-    (ChatMessage::user(text), source_event_id)
 }
 
 #[cfg(test)]

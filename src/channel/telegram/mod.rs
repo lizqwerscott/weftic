@@ -551,6 +551,7 @@ mod tests {
         BotMe {
             id: BOT_ID,
             username: Some(BOT_USERNAME.to_string()),
+            can_read_all_group_messages: false,
         }
     }
 

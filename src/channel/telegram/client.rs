@@ -77,6 +77,10 @@ impl TelegramClient {
 pub struct BotMe {
     pub id: i64,
     pub username: Option<String>,
+    /// True when privacy mode is disabled, i.e. the bot can read all group
+    /// messages (not just mentions / replies / commands).
+    #[serde(default)]
+    pub can_read_all_group_messages: bool,
 }
 
 /// The `{ ok, description, result }` envelope every Bot API method returns.
