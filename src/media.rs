@@ -49,14 +49,20 @@ impl MediaStore {
         &self.root
     }
 
-    /// The stable id for a platform handle (FNV-1a hex, like identity refs).
-    pub fn id_for(handle: &MediaHandle) -> String {
-        format!("{:016x}", fnv1a(handle.0.as_bytes()))
+    /// The stable id for a platform handle: FNV-1a hex (like identity refs) plus
+    /// an extension derived from the mime, when we know one.
+    pub fn id_for(handle: &MediaHandle, mime: Option<&str>) -> String {
+        let hash = format!("{:016x}", fnv1a(handle.0.as_bytes()));
+
+        match mime.and_then(extension_for) {
+            Some(extension) => format!("{hash}.{extension}"),
+            None => hash,
+        }
     }
 
     /// The `media://` handle for a platform handle.
-    pub fn uri(handle: &MediaHandle) -> String {
-        format!("media://inbound/{}", Self::id_for(handle))
+    pub fn uri(handle: &MediaHandle, mime: Option<&str>) -> String {
+        format!("media://inbound/{}", Self::id_for(handle, mime))
     }
 
     /// The single path component behind a `media://inbound/<id>` URI.
@@ -131,6 +137,28 @@ impl MediaStore {
     }
 }
 
+/// A file extension for a mime type, when we know one.
+fn extension_for(mime: &str) -> Option<&'static str> {
+    let extension = match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "video/webm" => "webm",
+        "video/mp4" => "mp4",
+        "audio/ogg" => "ogg",
+        "audio/mpeg" => "mp3",
+        "audio/mp4" => "m4a",
+        "application/pdf" => "pdf",
+        "application/x-tgsticker" => "tgs",
+        "application/octet-stream" => "bin",
+        "text/plain" => "txt",
+        _ => return None,
+    };
+
+    Some(extension)
+}
+
 /// Download and store any media the batch references but the store is missing.
 /// Best-effort: failures only warn, so a missing file degrades to an
 /// unavailable reference rather than failing the turn.
@@ -193,7 +221,7 @@ pub fn tag_event(event: &mut Event) {
         };
 
         if media.uri.is_none() {
-            media.uri = Some(MediaStore::uri(&media.handle));
+            media.uri = Some(MediaStore::uri(&media.handle, media.mime.as_deref()));
         }
     }
 }
@@ -267,10 +295,28 @@ mod tests {
     fn a_handle_maps_to_a_stable_id_and_uri() {
         let handle = handle("file");
 
-        assert_eq!(MediaStore::id_for(&handle), MediaStore::id_for(&handle));
         assert_eq!(
-            MediaStore::uri(&handle),
-            format!("media://inbound/{}", MediaStore::id_for(&handle))
+            MediaStore::id_for(&handle, Some("image/webp")),
+            MediaStore::id_for(&handle, Some("image/webp"))
+        );
+        assert_eq!(
+            MediaStore::uri(&handle, Some("image/webp")),
+            format!(
+                "media://inbound/{}",
+                MediaStore::id_for(&handle, Some("image/webp"))
+            )
+        );
+    }
+
+    #[test]
+    fn a_known_mime_selects_the_extension() {
+        let handle = handle("file");
+
+        assert!(MediaStore::id_for(&handle, Some("image/webp")).ends_with(".webp"));
+        assert!(MediaStore::id_for(&handle, Some("application/x-tgsticker")).ends_with(".tgs"));
+        assert_eq!(
+            MediaStore::id_for(&handle, None),
+            MediaStore::id_for(&handle, Some("application/x-unknown"))
         );
     }
 
@@ -329,24 +375,24 @@ mod tests {
     #[tokio::test]
     async fn ensure_loaded_stores_missing_media() {
         let store = store();
-        let uri = MediaStore::uri(&handle("file"));
+        let uri = MediaStore::uri(&handle("file"), Some("image/jpeg"));
         let events = vec![stored_media(media_part("file", Some(uri.clone())))];
 
         let fetcher = FakeFetcher(Some(b"bytes".to_vec()));
         ensure_loaded(&events, &fetcher, &store, MEDIA_FETCH_TIMEOUT).await;
 
-        let id = MediaStore::id_for(&handle("file"));
+        let id = MediaStore::id_for(&handle("file"), Some("image/jpeg"));
         assert_eq!(std::fs::read(store.root().join(&id)).unwrap(), b"bytes");
     }
 
     #[tokio::test]
     async fn ensure_loaded_degrades_on_a_fetch_error() {
         let store = store();
-        let uri = MediaStore::uri(&handle("file"));
+        let uri = MediaStore::uri(&handle("file"), Some("image/jpeg"));
         let events = vec![stored_media(media_part("file", Some(uri)))];
 
         ensure_loaded(&events, &FakeFetcher(None), &store, MEDIA_FETCH_TIMEOUT).await;
 
-        assert!(!store.contains(&MediaStore::id_for(&handle("file"))));
+        assert!(!store.contains(&MediaStore::id_for(&handle("file"), Some("image/jpeg"))));
     }
 }

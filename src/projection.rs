@@ -178,7 +178,7 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
             Part::Text { text, .. } => lines.push(escape_text(text)),
             Part::Photo { media, caption } => {
                 has_media = true;
-                lines.push(media_line(media, None, "photo"));
+                lines.push(media_line(media, "photo", None, "photo"));
                 push_caption(&mut lines, caption);
             }
             Part::Voice {
@@ -192,7 +192,7 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
                     Some(seconds) => format!("voice {seconds}"),
                     None => "voice".to_string(),
                 };
-                lines.push(media_line(media, detail.as_deref(), &fallback));
+                lines.push(media_line(media, "voice", detail.as_deref(), &fallback));
                 push_caption(&mut lines, caption);
             }
             Part::Document {
@@ -205,12 +205,17 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
                     Some(name) => format!("document: {name}"),
                     None => "document".to_string(),
                 };
-                lines.push(media_line(media, file_name.as_deref(), &fallback));
+                lines.push(media_line(
+                    media,
+                    "document",
+                    file_name.as_deref(),
+                    &fallback,
+                ));
                 push_caption(&mut lines, caption);
             }
             Part::Sticker { media } => {
                 has_media = true;
-                lines.push(media_line(media, None, "sticker"));
+                lines.push(media_line(media, "sticker", None, "sticker"));
             }
         }
     }
@@ -226,7 +231,7 @@ fn push_caption(lines: &mut Vec<String>, caption: &Option<String>) {
 
 /// A media body line: the gateway's `media://` handle once it has one, else a
 /// degraded placeholder.
-fn media_line(media: &Media, detail: Option<&str>, fallback: &str) -> String {
+fn media_line(media: &Media, kind: &str, detail: Option<&str>, fallback: &str) -> String {
     let Some(uri) = &media.uri else {
         return format!("[{fallback}]");
     };
@@ -234,8 +239,8 @@ fn media_line(media: &Media, detail: Option<&str>, fallback: &str) -> String {
     let mime = media.mime.as_deref().unwrap_or("application/octet-stream");
 
     match detail {
-        Some(detail) => format!("[media: {uri} ({mime}) \"{detail}\"]"),
-        None => format!("[media: {uri} ({mime})]"),
+        Some(detail) => format!("[media: {uri} ({mime}) {kind} \"{detail}\"]"),
+        None => format!("[media: {uri} ({mime}) {kind}]"),
     }
 }
 
@@ -639,7 +644,29 @@ mod tests {
 
         assert_eq!(
             content(&projected),
-            "<msg id=\"m1\" from=\"member_a\" t=\"00:00:00\" self=\"false\">\nlook\n[media: media://inbound/abc (image/jpeg)]"
+            "<msg id=\"m1\" from=\"member_a\" t=\"00:00:00\" self=\"false\">\nlook\n[media: media://inbound/abc (image/jpeg) photo]"
+        );
+    }
+
+    #[test]
+    fn a_media_line_names_its_kind() {
+        let mut media = text_event("", 0);
+        let EventOrigin::Platform(platform) = &mut media.origin else {
+            panic!("helper must build a platform event");
+        };
+        platform.parts = vec![Part::Sticker {
+            media: Media {
+                handle: MediaHandle("file".to_string()),
+                uri: Some("media://inbound/x.tgs".to_string()),
+                mime: Some("application/x-tgsticker".to_string()),
+            },
+        }];
+
+        let projected = project(&[stored(1, media)], &Roster::default());
+
+        assert_eq!(
+            content(&projected),
+            "<msg id=\"m1\" from=\"member_a\" t=\"00:00:00\" self=\"false\">\n[media: media://inbound/x.tgs (application/x-tgsticker) sticker]"
         );
     }
 

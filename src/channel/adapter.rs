@@ -143,20 +143,21 @@ mod tests {
 
     #[test]
     fn mock_returns_results_in_scripted_order() {
-        let adapter = MockChannelAdapter::new(vec![
-            Ok(vec![text_event("webui", "first")]),
-            Ok(vec![text_event("webui", "second")]),
-        ]);
+        // Reuse the scripted events: building the expectation with a fresh
+        // `text_event` would race `Timestamp::now()` against the mock.
+        let first = vec![text_event("webui", "first")];
+        let second = vec![text_event("webui", "second")];
+        let adapter = MockChannelAdapter::new(vec![Ok(first.clone()), Ok(second.clone())]);
 
-        let first = adapter
+        let produced_first = adapter
             .normalize(&RawUpdate::new(Channel::Webui, json!({})))
             .unwrap();
-        let second = adapter
+        let produced_second = adapter
             .normalize(&RawUpdate::new(Channel::Webui, json!({})))
             .unwrap();
 
-        assert_eq!(first, vec![text_event("webui", "first")]);
-        assert_eq!(second, vec![text_event("webui", "second")]);
+        assert_eq!(produced_first, first);
+        assert_eq!(produced_second, second);
     }
 
     #[test]

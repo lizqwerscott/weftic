@@ -459,7 +459,7 @@ mod tests {
     fn media_context(name: &str, bytes: &[u8]) -> (ToolContext, String, PathBuf) {
         let store = crate::media::MediaStore::new(crate::workspace::temp_base(name)).unwrap();
         let handle = crate::event::MediaHandle("file".to_string());
-        let id = crate::media::MediaStore::id_for(&handle);
+        let id = crate::media::MediaStore::id_for(&handle, Some("image/jpeg"));
         store.save(&id, bytes).unwrap();
         let path = store.root().join(&id);
 
@@ -468,7 +468,11 @@ mod tests {
             media: std::sync::Arc::new(store),
         };
 
-        (ctx, crate::media::MediaStore::uri(&handle), path)
+        (
+            ctx,
+            crate::media::MediaStore::uri(&handle, Some("image/jpeg")),
+            path,
+        )
     }
 
     #[test]

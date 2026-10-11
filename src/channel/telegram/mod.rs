@@ -316,11 +316,17 @@ fn build_parts(message: &Message) -> Vec<Part> {
     }
 
     if let Some(sticker) = &message.sticker {
+        // A sticker is a static webp, an animated `.tgs`, or a video `.webm`.
+        let mime = if sticker.is_video {
+            "video/webm"
+        } else if sticker.is_animated {
+            "application/x-tgsticker"
+        } else {
+            "image/webp"
+        };
+
         parts.push(Part::Sticker {
-            media: Media::new(
-                MediaHandle(sticker.file_id.clone()),
-                Some("image/webp".to_string()),
-            ),
+            media: Media::new(MediaHandle(sticker.file_id.clone()), Some(mime.to_string())),
         });
     }
 
@@ -520,6 +526,10 @@ struct Document {
 #[derive(Debug, Deserialize)]
 struct Sticker {
     file_id: String,
+    #[serde(default)]
+    is_animated: bool,
+    #[serde(default)]
+    is_video: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -772,6 +782,44 @@ mod tests {
                 payload,
             )]
         );
+    }
+
+    #[test]
+    fn a_sticker_mime_reflects_its_kind() {
+        let cases = [
+            (None, "image/webp"),
+            (Some("is_animated"), "application/x-tgsticker"),
+            (Some("is_video"), "video/webm"),
+        ];
+
+        for (flag, expected) in cases {
+            let mut sticker = json!({"file_id": "s"});
+            if let Some(flag) = flag {
+                sticker[flag] = json!(true);
+            }
+
+            let payload = json!({
+                "update_id": 104,
+                "message": {
+                    "message_id": 9,
+                    "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                    "date": 1_700_000_400,
+                    "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                    "sticker": sticker
+                }
+            });
+            let raw = RawUpdate::new(Channel::Telegram, payload);
+
+            let events = adapter().normalize(&raw).unwrap();
+            let EventOrigin::Platform(platform) = &events[0].origin else {
+                panic!("expected a platform event");
+            };
+            let Part::Sticker { media } = &platform.parts[0] else {
+                panic!("expected a sticker part");
+            };
+
+            assert_eq!(media.mime.as_deref(), Some(expected));
+        }
     }
 
     #[test]

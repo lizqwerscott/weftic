@@ -649,7 +649,7 @@ mod tests {
             panic!("expected a photo part");
         };
 
-        let expected = MediaStore::uri(&MediaHandle("file".to_string()));
+        let expected = MediaStore::uri(&MediaHandle("file".to_string()), Some("image/jpeg"));
         assert_eq!(media.handle, MediaHandle("file".to_string()));
         assert_eq!(media.uri.as_deref(), Some(expected.as_str()));
     }
