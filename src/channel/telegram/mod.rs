@@ -12,7 +12,7 @@ use crate::channel::telegram::client::BotMe;
 use crate::channel::{Channel, ChannelChatType, DeliveryTarget};
 use crate::event::{
     BotRef, DedupKey, Delivery, Entity, EntityKind, Envelope, Event, EventOrigin, ExternalReply,
-    MediaHandle, Mention, Part, PlatformEvent, PlatformKind, Quote, ReplyOrigin, ReplyPeer,
+    Media, MediaHandle, Mention, Part, PlatformEvent, PlatformKind, Quote, ReplyOrigin, ReplyPeer,
     ReplyRef, ServiceKind, Timestamp,
 };
 use crate::identity::member_ref;
@@ -288,14 +288,17 @@ fn build_parts(message: &Message) -> Vec<Part> {
         && let Some(largest) = photos.iter().max_by_key(|photo| photo.width * photo.height)
     {
         parts.push(Part::Photo {
-            handle: MediaHandle(largest.file_id.clone()),
+            media: Media::new(
+                MediaHandle(largest.file_id.clone()),
+                Some("image/jpeg".to_string()),
+            ),
             caption: caption.clone(),
         });
     }
 
     if let Some(voice) = &message.voice {
         parts.push(Part::Voice {
-            handle: MediaHandle(voice.file_id.clone()),
+            media: Media::new(MediaHandle(voice.file_id.clone()), voice.mime_type.clone()),
             duration_s: Some(voice.duration.max(0) as u32),
             caption: caption.clone(),
         });
@@ -303,7 +306,10 @@ fn build_parts(message: &Message) -> Vec<Part> {
 
     if let Some(document) = &message.document {
         parts.push(Part::Document {
-            handle: MediaHandle(document.file_id.clone()),
+            media: Media::new(
+                MediaHandle(document.file_id.clone()),
+                document.mime_type.clone(),
+            ),
             file_name: document.file_name.clone(),
             caption: caption.clone(),
         });
@@ -311,7 +317,10 @@ fn build_parts(message: &Message) -> Vec<Part> {
 
     if let Some(sticker) = &message.sticker {
         parts.push(Part::Sticker {
-            handle: MediaHandle(sticker.file_id.clone()),
+            media: Media::new(
+                MediaHandle(sticker.file_id.clone()),
+                Some("image/webp".to_string()),
+            ),
         });
     }
 
@@ -498,12 +507,14 @@ struct PhotoSize {
 struct Voice {
     file_id: String,
     duration: i64,
+    mime_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Document {
     file_id: String,
     file_name: Option<String>,
+    mime_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -751,7 +762,10 @@ mod tests {
                 None,
                 "8",
                 vec![Part::Photo {
-                    handle: MediaHandle("large".to_string()),
+                    media: Media::new(
+                        MediaHandle("large".to_string()),
+                        Some("image/jpeg".to_string()),
+                    ),
                     caption: Some("look".to_string()),
                 }],
                 "103",

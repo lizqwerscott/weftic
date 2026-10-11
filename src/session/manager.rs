@@ -15,6 +15,7 @@ use crate::database::Database;
 use crate::database::events::{AppendOutcome, StoredEvent};
 use crate::event::{Event, EventId, EventOrigin};
 use crate::identity::ObservedIdentity;
+use crate::media::{self, MEDIA_FETCH_TIMEOUT, MediaFetcher, MediaStore};
 use crate::output::OutputSink;
 use crate::projection::{self, Projected, Roster};
 use crate::session::Session;
@@ -75,6 +76,7 @@ pub struct SessionManager {
     resolver: SessionResolver,
     sessions: Mutex<HashMap<SessionKey, SessionEntry>>,
     database: Arc<Database>,
+    media: Arc<MediaStore>,
     agent_id: String,
 }
 
@@ -84,12 +86,14 @@ impl SessionManager {
         resolver: SessionResolver,
         agent_id: impl Into<String>,
         database: Arc<Database>,
+        media: Arc<MediaStore>,
     ) -> Self {
         Self {
             engine,
             resolver,
             sessions: Mutex::new(HashMap::new()),
             database,
+            media,
             agent_id: agent_id.into(),
         }
     }
@@ -97,10 +101,14 @@ impl SessionManager {
     /// Append an inbound event (deduping it), then route it to its session.
     pub async fn ingest(
         &self,
-        event: Event,
+        mut event: Event,
         sink: Arc<dyn OutputSink>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     ) -> Result<IngestOutcome> {
+        // Give every media part its stable `media://` handle before storing it;
+        // the bytes are downloaded later, in the session task.
+        media::tag_event(&mut event);
+
         let key = session_key_for(&event, &self.agent_id)?;
         // The gate runs before any turn is created; a denied event is still
         // recorded below (audit + dedup), it just never reaches a session.
@@ -178,8 +186,18 @@ impl SessionManager {
             Entry::Occupied(existing) => Ok(existing.get().handle.clone()),
             Entry::Vacant(vacant) => {
                 let session = Session::new(self.resolver.spec_for(key)?)?;
+                let fetcher = key.parse().and_then(|target| {
+                    let channel = *target.channel();
+                    self.resolver.media_fetcher(channel)
+                });
                 let (tx, rx) = mpsc::channel(SESSION_QUEUE);
-                let task = tokio::spawn(run_session(self.engine.clone(), session, rx));
+                let task = tokio::spawn(run_session(
+                    self.engine.clone(),
+                    session,
+                    rx,
+                    self.media.clone(),
+                    fetcher,
+                ));
                 let handle = SessionHandle { tx };
                 vacant.insert(SessionEntry {
                     handle: handle.clone(),
@@ -237,6 +255,8 @@ async fn run_session(
     engine: Arc<AgentEngine>,
     mut session: Session,
     mut rx: mpsc::Receiver<SessionInput>,
+    media: Arc<MediaStore>,
+    fetcher: Option<Arc<dyn MediaFetcher>>,
 ) {
     while let Some(input) = rx.recv().await {
         match input {
@@ -246,6 +266,13 @@ async fn run_session(
                 sink,
                 reply,
             } => {
+                // Download any media the batch references before the turn, so
+                // `read` finds it. Off the poll loop, and best-effort.
+                if let Some(fetcher) = &fetcher {
+                    media::ensure_loaded(&events, fetcher.as_ref(), &media, MEDIA_FETCH_TIMEOUT)
+                        .await;
+                }
+
                 let Projected {
                     message,
                     source_event_id,
@@ -303,7 +330,7 @@ mod tests {
     use crate::channel::{Channel, DeliveryTarget};
     use crate::config::model_provider::testing::{ScriptedModel, text_events};
     use crate::config::system_prompt::SystemPromptConfig;
-    use crate::event::{ActorRef, DedupKey};
+    use crate::event::{ActorRef, DedupKey, Media, MediaHandle, Part};
     use crate::permissions::Permissions;
     use crate::system_prompt::SystemPromptManager;
     use crate::tools::ToolRouter;
@@ -373,8 +400,12 @@ mod tests {
         let mut tool_router = ToolRouter::new();
         tool_router.register_builtin_tools().unwrap();
 
+        let media =
+            Arc::new(MediaStore::new(crate::workspace::temp_base("media-manager")).unwrap());
+
         let engine = Arc::new(AgentEngine::new(
             model,
+            media.clone(),
             tool_router,
             system_prompt_manager,
             100,
@@ -399,6 +430,7 @@ mod tests {
             resolver,
             "main",
             Arc::new(Database::in_memory().await.unwrap()),
+            media,
         )
     }
 
@@ -575,5 +607,43 @@ mod tests {
             names,
             HashMap::from([(ActorRef::new(LOCAL_SENDER), "Local User".to_string())])
         );
+    }
+
+    #[tokio::test]
+    async fn ingest_tags_media_parts_with_a_media_uri() {
+        let model = ScriptedModel::text_reply("ok");
+        let manager = session_manager(model).await;
+
+        let mut event = event("look");
+        let EventOrigin::Platform(platform) = &mut event.origin else {
+            panic!("helper must build a platform event");
+        };
+        platform.parts = vec![Part::Photo {
+            media: Media::new(
+                MediaHandle("file".to_string()),
+                Some("image/jpeg".to_string()),
+            ),
+            caption: None,
+        }];
+
+        let (reply, _) = enqueue(&manager, event).await;
+        assert!(reply.await.unwrap().is_ok());
+
+        let stored = manager
+            .database
+            .get_event(EventId(1))
+            .await
+            .unwrap()
+            .unwrap();
+        let EventOrigin::Platform(platform) = &stored.event.origin else {
+            panic!("expected a platform event");
+        };
+        let Part::Photo { media, .. } = &platform.parts[0] else {
+            panic!("expected a photo part");
+        };
+
+        let expected = MediaStore::uri(&MediaHandle("file".to_string()));
+        assert_eq!(media.handle, MediaHandle("file".to_string()));
+        assert_eq!(media.uri.as_deref(), Some(expected.as_str()));
     }
 }

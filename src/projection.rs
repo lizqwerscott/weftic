@@ -10,8 +10,8 @@ use time::macros::format_description;
 use crate::channel::ChannelChatType;
 use crate::database::events::StoredEvent;
 use crate::event::{
-    ActorRef, Envelope, EventId, EventOrigin, ExternalReply, Part, PlatformEvent, PlatformKind,
-    ReplyOrigin,
+    ActorRef, Envelope, EventId, EventOrigin, ExternalReply, Media, Part, PlatformEvent,
+    PlatformKind, ReplyOrigin,
 };
 
 /// Same-sender plain-text messages this close merge into one block.
@@ -176,36 +176,41 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
     for part in parts {
         match part {
             Part::Text { text, .. } => lines.push(escape_text(text)),
-            Part::Photo { caption, .. } => {
+            Part::Photo { media, caption } => {
                 has_media = true;
-                lines.push("[photo]".to_string());
+                lines.push(media_line(media, None, "photo"));
                 push_caption(&mut lines, caption);
             }
             Part::Voice {
+                media,
                 duration_s,
                 caption,
-                ..
             } => {
                 has_media = true;
-                lines.push(match duration_s {
-                    Some(seconds) => format!("[voice {seconds}s]"),
-                    None => "[voice]".to_string(),
-                });
+                let detail = duration_s.map(|seconds| format!("{seconds}s"));
+                let fallback = match &detail {
+                    Some(seconds) => format!("voice {seconds}"),
+                    None => "voice".to_string(),
+                };
+                lines.push(media_line(media, detail.as_deref(), &fallback));
                 push_caption(&mut lines, caption);
             }
             Part::Document {
-                file_name, caption, ..
+                media,
+                file_name,
+                caption,
             } => {
                 has_media = true;
-                lines.push(match file_name {
-                    Some(name) => format!("[document: {name}]"),
-                    None => "[document]".to_string(),
-                });
+                let fallback = match file_name {
+                    Some(name) => format!("document: {name}"),
+                    None => "document".to_string(),
+                };
+                lines.push(media_line(media, file_name.as_deref(), &fallback));
                 push_caption(&mut lines, caption);
             }
-            Part::Sticker { .. } => {
+            Part::Sticker { media } => {
                 has_media = true;
-                lines.push("[sticker]".to_string());
+                lines.push(media_line(media, None, "sticker"));
             }
         }
     }
@@ -216,6 +221,21 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
 fn push_caption(lines: &mut Vec<String>, caption: &Option<String>) {
     if let Some(caption) = caption {
         lines.push(escape_text(caption));
+    }
+}
+
+/// A media body line: the gateway's `media://` handle once it has one, else a
+/// degraded placeholder.
+fn media_line(media: &Media, detail: Option<&str>, fallback: &str) -> String {
+    let Some(uri) = &media.uri else {
+        return format!("[{fallback}]");
+    };
+
+    let mime = media.mime.as_deref().unwrap_or("application/octet-stream");
+
+    match detail {
+        Some(detail) => format!("[media: {uri} ({mime}) \"{detail}\"]"),
+        None => format!("[media: {uri} ({mime})]"),
     }
 }
 
@@ -573,7 +593,10 @@ mod tests {
             panic!("helper must build a platform event");
         };
         platform.parts = vec![Part::Photo {
-            handle: MediaHandle("file".to_string()),
+            media: Media::new(
+                MediaHandle("file".to_string()),
+                Some("image/jpeg".to_string()),
+            ),
             caption: Some("look".to_string()),
         }];
 
@@ -587,6 +610,36 @@ mod tests {
         assert_eq!(
             content(&projected),
             "<msg id=\"m1\" from=\"member_a\" t=\"22:13:20\" self=\"false\">\none\n<msg id=\"m2\" from=\"member_a\" t=\"22:13:25\" self=\"false\">\n[photo]\nlook"
+        );
+    }
+
+    #[test]
+    fn a_stored_media_part_renders_its_media_uri() {
+        let mut media = text_event("", 0);
+        let EventOrigin::Platform(platform) = &mut media.origin else {
+            panic!("helper must build a platform event");
+        };
+        let mut stored_media = Media::new(
+            MediaHandle("file".to_string()),
+            Some("image/jpeg".to_string()),
+        );
+        stored_media.uri = Some("media://inbound/abc".to_string());
+        platform.parts = vec![
+            Part::Text {
+                text: "look".to_string(),
+                entities: vec![],
+            },
+            Part::Photo {
+                media: stored_media,
+                caption: None,
+            },
+        ];
+
+        let projected = project(&[stored(1, media)], &Roster::default());
+
+        assert_eq!(
+            content(&projected),
+            "<msg id=\"m1\" from=\"member_a\" t=\"00:00:00\" self=\"false\">\nlook\n[media: media://inbound/abc (image/jpeg)]"
         );
     }
 

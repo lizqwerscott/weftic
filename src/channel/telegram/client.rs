@@ -62,6 +62,44 @@ impl TelegramClient {
             .ok_or_else(|| anyhow!("telegram getWebhookInfo returned no result"))
     }
 
+    /// Resolve a `file_id` to its server-side `file_path` (`getFile`).
+    pub async fn get_file(&self, file_id: &str) -> Result<String> {
+        let body = self
+            .get("getFile", &[("file_id", file_id.to_string())])
+            .await?;
+
+        let result = Envelope::<FileResult>::decode("getFile", &body)?
+            .into_result("getFile")?
+            .ok_or_else(|| anyhow!("telegram getFile returned no result"))?;
+
+        result
+            .file_path
+            .ok_or_else(|| anyhow!("telegram getFile returned no file_path"))
+    }
+
+    /// Download a file's bytes from the `/file/bot<token>/<file_path>` route.
+    pub async fn download_file(&self, file_path: &str) -> Result<Vec<u8>> {
+        let url = format!("{API_BASE}/file/bot{}/{file_path}", self.token);
+
+        let response = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|error| anyhow!("downloading telegram file: {}", error.without_url()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!("downloading telegram file: {status}"));
+        }
+
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| anyhow!("reading telegram file: {}", error.without_url()))
+    }
+
     /// GET a method with query parameters and return the raw body.
     pub async fn get(&self, method: &str, query: &[(&str, String)]) -> Result<String> {
         self.http
@@ -107,6 +145,12 @@ pub struct WebhookInfo {
     /// The webhook URL, empty when no webhook is set up.
     #[serde(default)]
     pub url: String,
+}
+
+/// The `getFile` result: a server-side path to download from.
+#[derive(Debug, Deserialize)]
+struct FileResult {
+    file_path: Option<String>,
 }
 
 /// The `{ ok, description, result }` envelope every Bot API method returns.

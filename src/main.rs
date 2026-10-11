@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 use weftic::agent_engine::AgentEngine;
 use weftic::config::{Config, model_provider::ChatModel};
 use weftic::database::Database;
+use weftic::media::{MEDIA_TTL, MediaStore};
 use weftic::registry_channels;
 use weftic::session::manager::SessionManager;
 use weftic::session::resolver::SessionResolver;
@@ -37,6 +38,12 @@ async fn main() -> Result<()> {
     let model: Arc<dyn ChatModel> = Arc::new(config.model_register.resolve()?);
     config.model_register.check_health().await?;
 
+    let media = Arc::new(MediaStore::new(config.storage.media_dir())?);
+    let pruned = media.prune(MEDIA_TTL);
+    if pruned > 0 {
+        info!("pruned {pruned} stale media file(s)");
+    }
+
     let mut tool_router = ToolRouter::new();
     tool_router.register_builtin_tools()?;
 
@@ -47,6 +54,7 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(AgentEngine::new(
         model,
+        media.clone(),
         tool_router,
         system_prompt_manager,
         config.engine.max_iterations,
@@ -75,6 +83,7 @@ async fn main() -> Result<()> {
         resolver,
         "main",
         database.clone(),
+        media,
     ));
 
     // Each channel's inbound loop gets its own task, so one slow channel can't

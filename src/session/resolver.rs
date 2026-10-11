@@ -8,6 +8,7 @@ use crate::channel::capabilities::{ChannelCapabilities, ReplyMode, StreamMode};
 use crate::channel::registry::ChannelRegistry;
 use crate::channel::{Channel, ChannelChatType, DeliveryTarget, SessionKey};
 use crate::event::Event;
+use crate::media::MediaFetcher;
 use crate::permissions::{Mode, Permissions, Role};
 use crate::session::ChannelBinding;
 use crate::session::spec::SessionSpec;
@@ -61,6 +62,11 @@ impl SessionResolver {
     /// Runs before a session is created (`SessionManager::ingest`).
     pub fn admit(&self, event: &Event) -> Admission {
         self.access.decide(event)
+    }
+
+    /// The media downloader for `channel`, if the channel has one.
+    pub fn media_fetcher(&self, channel: Channel) -> Option<Arc<dyn MediaFetcher>> {
+        self.registry.runtime(channel)?.media_fetcher()
     }
 
     pub fn spec_for(&self, key: &SessionKey) -> Result<SessionSpec, ResolveError> {

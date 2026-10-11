@@ -25,6 +25,7 @@ pub mod database;
 pub mod event;
 pub mod identity;
 pub mod inbound;
+pub mod media;
 pub mod output;
 pub mod permissions;
 pub mod projection;

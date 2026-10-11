@@ -10,6 +10,30 @@ use crate::channel::sender::ChannelSender;
 use crate::channel::telegram::client::{BotMe, TelegramClient};
 use crate::channel::telegram::poll::TelegramPoller;
 use crate::channel::telegram::send::TelegramSender;
+use crate::event::MediaHandle;
+use crate::media::{BoxedFetchFuture, MediaFetcher};
+
+/// Downloads Telegram media by `file_id`.
+pub struct TelegramMediaFetcher {
+    client: Arc<TelegramClient>,
+}
+
+impl TelegramMediaFetcher {
+    pub fn new(client: Arc<TelegramClient>) -> Self {
+        Self { client }
+    }
+}
+
+impl MediaFetcher for TelegramMediaFetcher {
+    fn fetch<'a>(&'a self, handle: &MediaHandle) -> BoxedFetchFuture<'a, anyhow::Result<Vec<u8>>> {
+        let file_id = handle.0.clone();
+
+        Box::pin(async move {
+            let file_path = self.client.get_file(&file_id).await?;
+            self.client.download_file(&file_path).await
+        })
+    }
+}
 
 pub struct TelegramRuntime {
     client: Arc<TelegramClient>,
@@ -54,6 +78,10 @@ impl ChannelRuntime for TelegramRuntime {
             &self.bot,
         )))
     }
+
+    fn media_fetcher(&self) -> Option<Arc<dyn MediaFetcher>> {
+        Some(Arc::new(TelegramMediaFetcher::new(self.client.clone())))
+    }
 }
 
 #[cfg(test)]
@@ -91,5 +119,10 @@ mod tests {
     #[test]
     fn telegram_runtime_has_an_inbound_driver() {
         assert!(runtime().inbound().is_some());
+    }
+
+    #[test]
+    fn telegram_runtime_has_a_media_fetcher() {
+        assert!(runtime().media_fetcher().is_some());
     }
 }

@@ -21,6 +21,11 @@ impl StorageConfig {
     pub fn db_path(&self) -> PathBuf {
         self.dir.join(DB_FILE)
     }
+
+    /// The root of the inbound media store (§11.5).
+    pub fn media_dir(&self) -> PathBuf {
+        self.dir.join("media/inbound")
+    }
 }
 
 fn default_dir() -> PathBuf {

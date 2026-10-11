@@ -9,6 +9,7 @@ use anyhow::Result;
 use crate::channel::capabilities::ChannelCapabilities;
 use crate::channel::sender::ChannelSender;
 use crate::channel::{Channel, DeliveryTarget};
+use crate::media::MediaFetcher;
 use crate::session::manager::SessionManager;
 
 pub trait InboundDriver: Send + Sync {
@@ -26,6 +27,11 @@ pub trait ChannelRuntime: Send + Sync {
 
     /// The inbound loop this channel wants driven, if it consumes messages.
     fn inbound(&self) -> Option<Arc<dyn InboundDriver>> {
+        None
+    }
+
+    /// The channel's media downloader, if it has one.
+    fn media_fetcher(&self) -> Option<Arc<dyn MediaFetcher>> {
         None
     }
 }

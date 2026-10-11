@@ -274,6 +274,7 @@ mod tests {
     use crate::config::system_prompt::SystemPromptConfig;
     use crate::database::Database;
     use crate::event::EventOrigin;
+    use crate::media::MediaStore;
     use crate::output::NullSink;
     use crate::permissions::Permissions;
     use crate::session::resolver::SessionResolver;
@@ -289,6 +290,23 @@ mod tests {
                 "date": 1_700_000_000,
                 "chat": {"id": 123456, "type": "private", "first_name": "Ali"},
                 "text": "hi"
+            }
+        })
+    }
+
+    fn private_photo_update() -> Value {
+        json!({
+            "update_id": 501,
+            "message": {
+                "message_id": 2,
+                "from": {"id": 123456, "is_bot": false, "first_name": "Ali"},
+                "date": 1_700_000_000,
+                "chat": {"id": 123456, "type": "private", "first_name": "Ali"},
+                "caption": "look",
+                "photo": [
+                    {"file_id": "small", "width": 10, "height": 10},
+                    {"file_id": "large", "width": 100, "height": 100}
+                ]
             }
         })
     }
@@ -433,8 +451,11 @@ mod tests {
         let mut tool_router = ToolRouter::new();
         tool_router.register_builtin_tools().unwrap();
 
+        let media = Arc::new(MediaStore::new(crate::workspace::temp_base("media-poll")).unwrap());
+
         let engine = Arc::new(AgentEngine::new(
             model,
+            media.clone(),
             tool_router,
             system_prompt_manager,
             100,
@@ -471,6 +492,7 @@ mod tests {
             resolver,
             "main",
             Arc::new(Database::in_memory().await.unwrap()),
+            media,
         )
     }
 
@@ -555,5 +577,23 @@ mod tests {
                 text: "hi back".to_string(),
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn a_photo_update_projects_a_media_uri() {
+        let model = ScriptedModel::text_reply("ok");
+        let sender = MockChannelSender::new();
+        let manager = telegram_manager(model.clone(), sender).await;
+
+        let (poller, _) = poller(vec![Ok(vec![private_photo_update()])]);
+        let (_, events) = poller.poll_once(0).await.unwrap();
+        let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
+
+        for event in events {
+            deliver(&manager, event, &sink).await;
+        }
+
+        let request = serde_json::to_string(&model.requests()[0]).unwrap();
+        assert!(request.contains("media://inbound/"), "{request}");
     }
 }

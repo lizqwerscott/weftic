@@ -255,22 +255,43 @@ pub enum Part {
         entities: Vec<Entity>,
     },
     Photo {
-        handle: MediaHandle,
+        media: Media,
         caption: Option<String>,
     },
     Voice {
-        handle: MediaHandle,
+        media: Media,
         duration_s: Option<u32>,
         caption: Option<String>,
     },
     Document {
-        handle: MediaHandle,
+        media: Media,
         file_name: Option<String>,
         caption: Option<String>,
     },
     Sticker {
-        handle: MediaHandle,
+        media: Media,
     },
+}
+
+/// A media part: the raw platform handle for fetching plus the gateway's own
+/// stable reference and mime, once known (§11.5).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Media {
+    /// The platform's raw handle (e.g. a Telegram `file_id`).
+    pub handle: MediaHandle,
+    /// `media://inbound/<id>`, filled at ingest; `None` until then.
+    pub uri: Option<String>,
+    pub mime: Option<String>,
+}
+
+impl Media {
+    pub fn new(handle: MediaHandle, mime: Option<String>) -> Self {
+        Self {
+            handle,
+            uri: None,
+            mime,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

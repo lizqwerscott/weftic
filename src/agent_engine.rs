@@ -6,6 +6,7 @@ use futures::StreamExt;
 use crate::{
     config::model_provider::ChatModel,
     event::EventId,
+    media::MediaStore,
     output::OutputSink,
     session::{
         Session,
@@ -68,6 +69,7 @@ impl std::error::Error for TurnStartError {}
 
 pub struct AgentEngine {
     model: Arc<dyn ChatModel>,
+    media: Arc<MediaStore>,
     tool_router: ToolRouter,
     max_iterations: usize,
     system_prompt_manager: SystemPromptManager,
@@ -76,12 +78,14 @@ pub struct AgentEngine {
 impl AgentEngine {
     pub fn new(
         model: Arc<dyn ChatModel>,
+        media: Arc<MediaStore>,
         tool_router: ToolRouter,
         system_prompt_manager: SystemPromptManager,
         max_iterations: usize,
     ) -> Self {
         AgentEngine {
             model,
+            media,
             max_iterations,
             tool_router,
             system_prompt_manager,
@@ -118,6 +122,7 @@ impl AgentEngine {
         let history = session.get_history();
         let ctx = ToolContext {
             workspace: session.workspace(),
+            media: self.media.clone(),
         };
 
         let mut state = TurnState {

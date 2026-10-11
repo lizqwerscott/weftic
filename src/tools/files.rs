@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader},
+    path::Path,
 };
 
 use serde::Deserialize;
@@ -39,12 +40,13 @@ impl Tool for ReadTool {
     const GROUP: ToolGroup = ToolGroup::File;
 
     fn description(&self) -> &str {
-        "Read a UTF-8 text file and return line-numbered content."
+        "Read a UTF-8 text file and return line-numbered content. A `media://inbound/<id>` handle resolves to the stored attachment; binary media report their size and local path instead."
     }
 
     fn system_description(&self) -> &str {
         "Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers.
-  Use offset and limit to continue reading large files."
+  Use offset and limit to continue reading large files.
+  An inbound attachment is referenced as `media://inbound/<id>`; reading it yields the stored file, or its size and path when it is binary."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -53,7 +55,7 @@ impl Tool for ReadTool {
           "properties": {
             "file_path": {
               "type": "string",
-              "description": "The absolute path to the file to read."
+              "description": "The absolute path to the file to read, or a `media://inbound/<id>` handle."
             },
             "offset": {
               "type": "number",
@@ -79,12 +81,25 @@ impl Tool for ReadTool {
     }
 }
 
+/// A non-UTF-8 media file: report its size and where it lives instead of failing.
+fn binary_notice(path: &Path) -> String {
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    format!("<binary media: {size} bytes>\npath: {}", path.display())
+}
+
 fn read_file(args: ReadToolArgs, ctx: ToolContext) -> Result<String> {
     if args.file_path.is_empty() {
         return Err(anyhow!("file_path is empty"));
     }
 
-    let path = ctx.workspace.resolve(&args.file_path)?;
+    // `media://` handles resolve through the media store, not the workspace —
+    // two seams, deliberately not merged (§11.5).
+    let from_media = args.file_path.starts_with("media://");
+    let path = if from_media {
+        ctx.media.resolve(&args.file_path)?
+    } else {
+        ctx.workspace.resolve(&args.file_path)?
+    };
 
     if !path.exists() {
         return Err(anyhow!("{} does not exist", path.display()));
@@ -124,7 +139,12 @@ fn read_file(args: ReadToolArgs, ctx: ToolContext) -> Result<String> {
     for line in reader.lines() {
         line_index += 1;
 
-        let line = line?;
+        let line = match line {
+            Ok(line) => line,
+            // A binary media file is not an error: report where it is.
+            Err(_) if from_media => return Ok(binary_notice(&path)),
+            Err(error) => return Err(error.into()),
+        };
 
         if (line_index < offset) || stop_collect {
             continue;
@@ -434,6 +454,58 @@ mod tests {
         assert!(out.starts_with("1: a\n2: b\n3: c\n4: d\n5: e"));
         assert!(out.ends_with("(End of file - total 5 lines)"));
         let _ = fs::remove_file(path);
+    }
+
+    fn media_context(name: &str, bytes: &[u8]) -> (ToolContext, String, PathBuf) {
+        let store = crate::media::MediaStore::new(crate::workspace::temp_base(name)).unwrap();
+        let handle = crate::event::MediaHandle("file".to_string());
+        let id = crate::media::MediaStore::id_for(&handle);
+        store.save(&id, bytes).unwrap();
+        let path = store.root().join(&id);
+
+        let ctx = ToolContext {
+            workspace: crate::tools::test_context().workspace,
+            media: std::sync::Arc::new(store),
+        };
+
+        (ctx, crate::media::MediaStore::uri(&handle), path)
+    }
+
+    #[test]
+    fn reads_a_text_media_file_by_uri() {
+        let (ctx, uri, _) = media_context("read-media", b"hello\nworld");
+
+        let out = read_file(
+            ReadToolArgs {
+                file_path: uri,
+                offset: None,
+                limit: None,
+            },
+            ctx,
+        )
+        .unwrap();
+
+        assert!(out.starts_with("1: hello\n2: world"), "{out}");
+    }
+
+    #[test]
+    fn reports_binary_media_metadata() {
+        let (ctx, uri, path) = media_context("read-binary", &[0xff, 0xfe, 0x00, 0x01]);
+
+        let out = read_file(
+            ReadToolArgs {
+                file_path: uri,
+                offset: None,
+                limit: None,
+            },
+            ctx,
+        )
+        .unwrap();
+
+        assert_eq!(
+            out,
+            format!("<binary media: 4 bytes>\npath: {}", path.display())
+        );
     }
 
     #[test]

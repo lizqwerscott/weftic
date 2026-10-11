@@ -13,6 +13,7 @@ use genai::chat::{Tool as GenaiTool, ToolCall, ToolResponse};
 
 use crate::channel::capabilities::ReplyMode;
 use crate::channel::sender::ChannelSender;
+use crate::media::MediaStore;
 use crate::permissions::ToolGroup;
 use crate::tools::{
     bash::BashTool,
@@ -66,6 +67,7 @@ impl std::error::Error for ToolRegisterError {}
 #[derive(Clone)]
 pub struct ToolContext {
     pub workspace: Arc<Workspace>,
+    pub media: Arc<MediaStore>,
 }
 
 /// An unconfined context rooted at `/`, for tests that operate on absolute
@@ -80,6 +82,10 @@ pub(crate) fn test_context() -> ToolContext {
     let policy = WorkspacePolicy::new(PathBuf::from("/"), Role::Owner);
     ToolContext {
         workspace: Arc::new(Workspace::new(&policy).expect("root `/` must exist")),
+        media: Arc::new(
+            MediaStore::new(crate::workspace::temp_base("media-context"))
+                .expect("temp media store"),
+        ),
     }
 }
 
