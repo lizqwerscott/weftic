@@ -53,6 +53,15 @@ impl TelegramClient {
             .ok_or_else(|| anyhow!("telegram getMe returned no result"))
     }
 
+    /// The bot's webhook status, as reported by `getWebhookInfo`.
+    pub async fn get_webhook_info(&self) -> Result<WebhookInfo> {
+        let body = self.get("getWebhookInfo", &[]).await?;
+
+        Envelope::<WebhookInfo>::decode("getWebhookInfo", &body)?
+            .into_result("getWebhookInfo")?
+            .ok_or_else(|| anyhow!("telegram getWebhookInfo returned no result"))
+    }
+
     /// GET a method with query parameters and return the raw body.
     pub async fn get(&self, method: &str, query: &[(&str, String)]) -> Result<String> {
         self.http
@@ -72,15 +81,32 @@ impl TelegramClient {
     }
 }
 
-/// The bot's own account, as reported by `getMe`.
-#[derive(Debug, Clone, Deserialize)]
+/// The bot's own account and global settings, as reported by `getMe`.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct BotMe {
     pub id: i64,
     pub username: Option<String>,
-    /// True when privacy mode is disabled, i.e. the bot can read all group
+    /// Whether the bot may be added to groups.
+    #[serde(default)]
+    pub can_join_groups: bool,
+    /// `true` when privacy mode is disabled, i.e. the bot reads all group
     /// messages (not just mentions / replies / commands).
     #[serde(default)]
     pub can_read_all_group_messages: bool,
+    /// Whether forum-topic mode (threaded conversations) is enabled.
+    #[serde(default)]
+    pub has_topics_enabled: bool,
+    /// Whether users may create and delete topics in private chats.
+    #[serde(default)]
+    pub allows_users_to_create_topics: bool,
+}
+
+/// The bot's webhook status, as reported by `getWebhookInfo`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WebhookInfo {
+    /// The webhook URL, empty when no webhook is set up.
+    #[serde(default)]
+    pub url: String,
 }
 
 /// The `{ ok, description, result }` envelope every Bot API method returns.

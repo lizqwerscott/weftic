@@ -89,7 +89,6 @@ impl TelegramAdapter {
             sender_platform_id: sender_id,
             sender_name: Some(sender_name),
             bot: Some(self.bot.clone()),
-            thread: message.message_thread_id.map(|id| id.to_string()),
             date: Timestamp::from_millis(message.date.saturating_mul(1000)),
             edit_date: message
                 .edit_date
@@ -441,7 +440,6 @@ struct Update {
 #[derive(Debug, Deserialize)]
 struct Message {
     message_id: i64,
-    message_thread_id: Option<i64>,
     from: Option<User>,
     sender_chat: Option<Chat>,
     date: i64,
@@ -551,7 +549,7 @@ mod tests {
         BotMe {
             id: BOT_ID,
             username: Some(BOT_USERNAME.to_string()),
-            can_read_all_group_messages: false,
+            ..Default::default()
         }
     }
 
@@ -587,7 +585,6 @@ mod tests {
                     sender_platform_id: sender_id.to_string(),
                     sender_name: Some(sender_name.to_string()),
                     bot: Some(bot_ref()),
-                    thread: None,
                     date: Timestamp::from_millis(date_ms),
                     edit_date: edit_ms.map(Timestamp::from_millis),
                     reply_to,
@@ -663,8 +660,7 @@ mod tests {
                 "from": {"id": 42, "is_bot": false, "first_name": "Bob"},
                 "date": 1_700_000_100,
                 "chat": {"id": -1001234567890i64, "type": "supergroup", "title": "Dev"},
-                "text": "hi all",
-                "message_thread_id": 7
+                "text": "hi all"
             }
         });
         let raw = RawUpdate::new(Channel::Telegram, payload.clone());
@@ -682,7 +678,6 @@ mod tests {
             platform.envelope.date,
             Timestamp::from_millis(1_700_000_100_000)
         );
-        assert_eq!(platform.envelope.thread.as_deref(), Some("7"));
         assert_eq!(platform.envelope.sender_name.as_deref(), Some("Bob"));
     }
 
