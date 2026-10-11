@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use genai::chat::ChatMessage;
+use genai::chat::{ChatMessage, ContentPart};
 use time::OffsetDateTime;
 use time::macros::format_description;
 
@@ -43,6 +43,21 @@ pub struct Projected {
     pub source_event_id: Option<EventId>,
 }
 
+/// Decides whether a media part becomes an inline content part (image bytes) or
+/// stays a `media://` text reference (§11.5).
+pub trait InlineMedia: Send + Sync {
+    fn inline(&self, media: &Media) -> Option<ContentPart>;
+}
+
+/// Never inlines — the text-only projection (`vision = false`, and tests).
+pub struct NoInline;
+
+impl InlineMedia for NoInline {
+    fn inline(&self, _media: &Media) -> Option<ContentPart> {
+        None
+    }
+}
+
 /// The sender refs of a batch, for resolving their names in one query.
 pub fn sender_refs(events: &[StoredEvent]) -> Vec<ActorRef> {
     events
@@ -55,6 +70,14 @@ pub fn sender_refs(events: &[StoredEvent]) -> Vec<ActorRef> {
 }
 
 pub fn project(events: &[StoredEvent], roster: &Roster) -> Projected {
+    project_with(events, roster, None)
+}
+
+pub fn project_with(
+    events: &[StoredEvent],
+    roster: &Roster,
+    inline: Option<&dyn InlineMedia>,
+) -> Projected {
     // A direct chat's sender is constant, so its block header is slimmed and the
     // peer identity rides in the runtime-context carrier instead (§11.2).
     let direct = events
@@ -84,7 +107,7 @@ pub fn project(events: &[StoredEvent], roster: &Roster) -> Projected {
     let source_event_id = blocks.first().map(|block| block.event_id);
 
     Projected {
-        message: ChatMessage::user(render(&blocks)),
+        message: ChatMessage::user(render_parts(&blocks, inline)),
         source_event_id,
     }
 }
@@ -102,6 +125,17 @@ fn content_platform(stored: &StoredEvent) -> Option<&PlatformEvent> {
     .then_some(platform.as_ref())
 }
 
+/// One line of a block body: plain text, or a media part that may be inlined.
+enum BodyLine {
+    Text(String),
+    Media {
+        media: Media,
+        kind: &'static str,
+        /// The text line used when the media is not inlined.
+        fallback: String,
+    },
+}
+
 struct Block {
     event_id: EventId,
     from: ActorRef,
@@ -113,7 +147,7 @@ struct Block {
     /// The latest message folded into this block, for the merge window.
     last_millis: i64,
     reply: Option<String>,
-    body: Vec<String>,
+    body: Vec<BodyLine>,
     /// Only plain text with no reply may merge with neighbours.
     mergeable: bool,
 }
@@ -129,10 +163,11 @@ impl Block {
     fn absorb(&mut self, mut other: Block) {
         let marker = format!("[{}] ", format_time(other.millis));
         for (index, line) in other.body.drain(..).enumerate() {
-            if index == 0 {
-                self.body.push(format!("{marker}{line}"));
-            } else {
-                self.body.push(line);
+            match (index, line) {
+                (0, BodyLine::Text(text)) => {
+                    self.body.push(BodyLine::Text(format!("{marker}{text}")));
+                }
+                (_, line) => self.body.push(line),
             }
         }
         self.last_millis = other.millis;
@@ -169,16 +204,21 @@ fn is_self(envelope: &Envelope) -> bool {
         .is_some_and(|bot| bot.platform_id == envelope.sender_platform_id)
 }
 
-fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
+fn body_lines(parts: &[Part]) -> (Vec<BodyLine>, bool) {
     let mut lines = Vec::new();
     let mut has_media = false;
 
     for part in parts {
         match part {
-            Part::Text { text, .. } => lines.push(escape_text(text)),
+            Part::Text { text, .. } => lines.push(BodyLine::Text(escape_text(text))),
             Part::Photo { media, caption } => {
                 has_media = true;
-                lines.push(media_line(media, "photo", None, "photo"));
+                let fallback = media_line(media, "photo", None, "photo");
+                lines.push(BodyLine::Media {
+                    media: media.clone(),
+                    kind: "photo",
+                    fallback,
+                });
                 push_caption(&mut lines, caption);
             }
             Part::Voice {
@@ -188,11 +228,16 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
             } => {
                 has_media = true;
                 let detail = duration_s.map(|seconds| format!("{seconds}s"));
-                let fallback = match &detail {
+                let placeholder = match &detail {
                     Some(seconds) => format!("voice {seconds}"),
                     None => "voice".to_string(),
                 };
-                lines.push(media_line(media, "voice", detail.as_deref(), &fallback));
+                let fallback = media_line(media, "voice", detail.as_deref(), &placeholder);
+                lines.push(BodyLine::Media {
+                    media: media.clone(),
+                    kind: "voice",
+                    fallback,
+                });
                 push_caption(&mut lines, caption);
             }
             Part::Document {
@@ -201,21 +246,26 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
                 caption,
             } => {
                 has_media = true;
-                let fallback = match file_name {
+                let placeholder = match file_name {
                     Some(name) => format!("document: {name}"),
                     None => "document".to_string(),
                 };
-                lines.push(media_line(
-                    media,
-                    "document",
-                    file_name.as_deref(),
-                    &fallback,
-                ));
+                let fallback = media_line(media, "document", file_name.as_deref(), &placeholder);
+                lines.push(BodyLine::Media {
+                    media: media.clone(),
+                    kind: "document",
+                    fallback,
+                });
                 push_caption(&mut lines, caption);
             }
             Part::Sticker { media } => {
                 has_media = true;
-                lines.push(media_line(media, "sticker", None, "sticker"));
+                let fallback = media_line(media, "sticker", None, "sticker");
+                lines.push(BodyLine::Media {
+                    media: media.clone(),
+                    kind: "sticker",
+                    fallback,
+                });
             }
         }
     }
@@ -223,9 +273,9 @@ fn body_lines(parts: &[Part]) -> (Vec<String>, bool) {
     (lines, has_media)
 }
 
-fn push_caption(lines: &mut Vec<String>, caption: &Option<String>) {
+fn push_caption(lines: &mut Vec<BodyLine>, caption: &Option<String>) {
     if let Some(caption) = caption {
-        lines.push(escape_text(caption));
+        lines.push(BodyLine::Text(escape_text(caption)));
     }
 }
 
@@ -282,20 +332,55 @@ fn external_reply_line(external: &ExternalReply) -> String {
     }
 }
 
-fn render(blocks: &[Block]) -> String {
-    let rendered: Vec<String> = blocks
-        .iter()
-        .map(|block| {
-            let mut lines = vec![header(block)];
-            if let Some(reply) = &block.reply {
-                lines.push(reply.clone());
-            }
-            lines.extend(block.body.iter().cloned());
-            lines.join("\n")
-        })
-        .collect();
+/// Render the blocks into content parts: one text part per text run, with an
+/// inline binary part (preceded by its kind tag) wherever `inline` accepts a
+/// media line. Without an inliner this is exactly the old flat text.
+fn render_parts(blocks: &[Block], inline: Option<&dyn InlineMedia>) -> Vec<ContentPart> {
+    let mut parts: Vec<ContentPart> = Vec::new();
+    let mut text = String::new();
 
-    rendered.join("\n")
+    for block in blocks {
+        push_line(&mut text, &header(block));
+
+        if let Some(reply) = &block.reply {
+            push_line(&mut text, reply);
+        }
+
+        for line in &block.body {
+            match line {
+                BodyLine::Text(line) => push_line(&mut text, line),
+                BodyLine::Media {
+                    media,
+                    kind,
+                    fallback,
+                } => match inline.and_then(|inline| inline.inline(media)) {
+                    Some(binary) => {
+                        flush_text(&mut parts, &mut text);
+                        parts.push(ContentPart::Text(format!("[{kind}]")));
+                        parts.push(binary);
+                    }
+                    None => push_line(&mut text, fallback),
+                },
+            }
+        }
+    }
+
+    flush_text(&mut parts, &mut text);
+
+    parts
+}
+
+fn push_line(buffer: &mut String, line: &str) {
+    if !buffer.is_empty() {
+        buffer.push('\n');
+    }
+    buffer.push_str(line);
+}
+
+fn flush_text(parts: &mut Vec<ContentPart>, text: &mut String) {
+    if !text.is_empty() {
+        parts.push(ContentPart::Text(std::mem::take(text)));
+    }
 }
 
 fn header(block: &Block) -> String {
@@ -671,6 +756,77 @@ mod tests {
             content(&projected),
             "<msg id=\"m1\" from=\"member_a\" t=\"00:00:00\" self=\"false\">\n[media: media://inbound/x.tgs (application/x-tgsticker) sticker]"
         );
+    }
+
+    struct FakeInline;
+
+    impl InlineMedia for FakeInline {
+        fn inline(&self, media: &Media) -> Option<ContentPart> {
+            media
+                .uri
+                .is_some()
+                .then(|| ContentPart::from_binary_base64("image/jpeg", "ZmFrZQ==", None))
+        }
+    }
+
+    fn photo_event(uri: Option<&str>, caption: Option<&str>) -> Event {
+        let mut event = text_event("", 0);
+        let EventOrigin::Platform(platform) = &mut event.origin else {
+            panic!("helper must build a platform event");
+        };
+        let mut media = Media::new(
+            MediaHandle("file".to_string()),
+            MediaHandle("unique".to_string()),
+            Some("image/jpeg".to_string()),
+        );
+        media.uri = uri.map(str::to_string);
+        platform.parts = vec![
+            Part::Text {
+                text: "look".to_string(),
+                entities: vec![],
+            },
+            Part::Photo {
+                media,
+                caption: caption.map(str::to_string),
+            },
+        ];
+
+        event
+    }
+
+    #[test]
+    fn an_inlined_image_becomes_a_binary_part_in_place() {
+        let events = vec![stored(
+            1,
+            photo_event(Some("media://inbound/x.jpg"), Some("a cat")),
+        )];
+
+        let projected = project_with(&events, &Roster::default(), Some(&FakeInline));
+
+        let parts = projected.message.content.parts();
+        assert_eq!(parts.len(), 4, "{parts:?}");
+        assert_eq!(
+            projected.message.content.texts(),
+            vec![
+                "<msg id=\"m1\" from=\"member_a\" t=\"00:00:00\" self=\"false\">\nlook",
+                "[photo]",
+                "a cat",
+            ]
+        );
+        assert!(parts[2].is_binary(), "{parts:?}");
+    }
+
+    #[test]
+    fn a_media_part_stays_text_when_not_inlined() {
+        let events = vec![stored(1, photo_event(Some("media://inbound/x.jpg"), None))];
+
+        let projected = project_with(&events, &Roster::default(), Some(&NoInline));
+
+        assert_eq!(
+            projected.message.content.texts().join("\n"),
+            "<msg id=\"m1\" from=\"member_a\" t=\"00:00:00\" self=\"false\">\nlook\n[media: media://inbound/x.jpg (image/jpeg) photo]"
+        );
+        assert!(!projected.message.content.contains_binary());
     }
 
     #[test]

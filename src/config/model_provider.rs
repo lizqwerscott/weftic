@@ -44,12 +44,16 @@ pub struct Model {
     temperature: Option<f64>,
     max_tokens: Option<u32>,
     reasoning_effort: Option<String>,
+    /// Whether the model accepts image input; absent = false (fail-closed, §11.5).
+    #[serde(default)]
+    vision: bool,
 }
 
 pub struct ResolvedModel {
     client: Client,
     model_id: String,
     options: ChatOptions,
+    vision: bool,
 }
 
 pub type BoxedModelFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -62,9 +66,18 @@ pub trait ChatModel: Send + Sync {
         &'a self,
         request: ChatRequest,
     ) -> BoxedModelFuture<'a, Result<ChatEventStream<'a>>>;
+
+    /// Whether this model accepts image input (§11.5). Fail-closed: default no.
+    fn vision(&self) -> bool {
+        false
+    }
 }
 
 impl ChatModel for ResolvedModel {
+    fn vision(&self) -> bool {
+        self.vision
+    }
+
     fn stream_chat<'a>(
         &'a self,
         request: ChatRequest,
@@ -237,6 +250,7 @@ impl ModelRegister {
             client,
             model_id: model.model.clone(),
             options,
+            vision: model.vision,
         })
     }
 
@@ -541,13 +555,20 @@ pub mod testing {
     pub struct ScriptedModel {
         replies: Mutex<VecDeque<Vec<ChatStreamEvent>>>,
         requests: Mutex<Vec<ChatRequest>>,
+        vision: bool,
     }
 
     impl ScriptedModel {
         pub fn new(replies: Vec<Vec<ChatStreamEvent>>) -> Arc<Self> {
+            Self::with_vision(replies, false)
+        }
+
+        /// A model that reports the given image-input capability (§11.5).
+        pub fn with_vision(replies: Vec<Vec<ChatStreamEvent>>, vision: bool) -> Arc<Self> {
             Arc::new(Self {
                 replies: Mutex::new(replies.into()),
                 requests: Mutex::new(Vec::new()),
+                vision,
             })
         }
 
@@ -609,6 +630,10 @@ pub mod testing {
     }
 
     impl ChatModel for ScriptedModel {
+        fn vision(&self) -> bool {
+            self.vision
+        }
+
         fn stream_chat<'a>(
             &'a self,
             request: ChatRequest,
@@ -629,6 +654,18 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vision_defaults_to_false_and_is_read_from_config() {
+        let plain: Model =
+            serde_json::from_value(serde_json::json!({"name": "m", "model": "x"})).unwrap();
+        assert!(!plain.vision);
+
+        let seeing: Model =
+            serde_json::from_value(serde_json::json!({"name": "m", "model": "x", "vision": true}))
+                .unwrap();
+        assert!(seeing.vision);
+    }
 
     #[test]
     fn models_url_appends_the_models_path_once() {
@@ -677,6 +714,7 @@ mod tests {
                         temperature: None,
                         max_tokens: None,
                         reasoning_effort: None,
+                        vision: false,
                     }],
                 },
             )]),

@@ -15,9 +15,9 @@ use crate::database::Database;
 use crate::database::events::{AppendOutcome, StoredEvent};
 use crate::event::{Event, EventId, EventOrigin};
 use crate::identity::ObservedIdentity;
-use crate::media::{self, MEDIA_FETCH_TIMEOUT, MediaFetcher, MediaStore};
+use crate::media::{self, ImageInliner, MEDIA_FETCH_TIMEOUT, MediaFetcher, MediaStore};
 use crate::output::OutputSink;
-use crate::projection::{self, Projected, Roster};
+use crate::projection::{self, InlineMedia, Projected, Roster};
 use crate::session::Session;
 use crate::session::history::TurnStatus;
 use crate::session::resolver::SessionResolver;
@@ -273,10 +273,16 @@ async fn run_session(
                         .await;
                 }
 
+                // A vision-capable model gets images inlined; anything else (or
+                // a model without the flag) keeps the `media://` text reference.
+                let inliner: Option<Box<dyn InlineMedia>> = engine
+                    .vision()
+                    .then(|| Box::new(ImageInliner::new(media.clone())) as Box<dyn InlineMedia>);
+
                 let Projected {
                     message,
                     source_event_id,
-                } = projection::project(&events, &roster);
+                } = projection::project_with(&events, &roster, inliner.as_deref());
 
                 tracing::debug!(
                     target: "projection",

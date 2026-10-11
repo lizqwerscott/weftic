@@ -92,6 +92,11 @@ impl AgentEngine {
         }
     }
 
+    /// Whether the active model accepts image input (§11.5).
+    pub fn vision(&self) -> bool {
+        self.model.vision()
+    }
+
     pub fn init(&self) -> anyhow::Result<()> {
         info!("registered tools: {:?}", self.tool_router.names());
         Ok(())

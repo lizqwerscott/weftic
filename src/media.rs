@@ -8,13 +8,16 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
+use genai::chat::ContentPart;
 
 use crate::database::events::StoredEvent;
 use crate::event::{Event, EventOrigin, Media, MediaHandle, Part};
 use crate::identity::fnv1a;
+use crate::projection::InlineMedia;
 
 /// Per-file cap; the public Telegram Bot API cannot serve more than 20 MiB.
 pub const MEDIA_MAX_BYTES: usize = 20 * 1024 * 1024;
@@ -134,6 +137,37 @@ impl MediaStore {
         }
 
         removed
+    }
+}
+
+/// Inlines a resolvable image media part as a binary content part, so a
+/// vision-capable model sees the pixels (§11.5). Anything else — non-images, a
+/// missing file, a read error — stays a `media://` text reference.
+pub struct ImageInliner {
+    store: Arc<MediaStore>,
+}
+
+impl ImageInliner {
+    pub fn new(store: Arc<MediaStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl InlineMedia for ImageInliner {
+    fn inline(&self, media: &Media) -> Option<ContentPart> {
+        let uri = media.uri.as_deref()?;
+
+        if !media
+            .mime
+            .as_deref()
+            .is_some_and(|mime| mime.starts_with("image/"))
+        {
+            return None;
+        }
+
+        let path = self.store.resolve(uri).ok()?;
+
+        ContentPart::from_binary_file(path).ok()
     }
 }
 
@@ -260,6 +294,40 @@ mod tests {
             },
             caption: None,
         }
+    }
+
+    #[test]
+    fn the_image_inliner_accepts_resolvable_images_only() {
+        let store = Arc::new(store());
+        let handle = handle("file");
+        let id = MediaStore::id_for(&handle, Some("image/jpeg"));
+        store.save(&id, b"bytes").unwrap();
+
+        let inliner = ImageInliner::new(store);
+        let image = Media {
+            handle: handle.clone(),
+            unique_id: MediaHandle::default(),
+            uri: Some(MediaStore::uri(&handle, Some("image/jpeg"))),
+            mime: Some("image/jpeg".to_string()),
+        };
+
+        assert!(inliner.inline(&image).is_some());
+        assert!(
+            inliner
+                .inline(&Media {
+                    mime: Some("application/x-tgsticker".to_string()),
+                    ..image.clone()
+                })
+                .is_none()
+        );
+        assert!(
+            inliner
+                .inline(&Media {
+                    uri: Some("media://inbound/absent.jpg".to_string()),
+                    ..image.clone()
+                })
+                .is_none()
+        );
     }
 
     #[test]

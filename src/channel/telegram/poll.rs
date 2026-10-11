@@ -273,8 +273,8 @@ mod tests {
     use crate::config::model_provider::testing::{ScriptedModel, text_events, tool_call_events};
     use crate::config::system_prompt::SystemPromptConfig;
     use crate::database::Database;
-    use crate::event::EventOrigin;
-    use crate::media::MediaStore;
+    use crate::event::{EventOrigin, MediaHandle};
+    use crate::media::{BoxedFetchFuture, MediaFetcher, MediaStore};
     use crate::output::NullSink;
     use crate::permissions::Permissions;
     use crate::session::resolver::SessionResolver;
@@ -428,6 +428,18 @@ mod tests {
         sender: Arc<MockChannelSender>,
     }
 
+    /// Serves fixed bytes for any handle, so media download + store runs in tests.
+    struct FixedFetcher;
+
+    impl MediaFetcher for FixedFetcher {
+        fn fetch<'a>(
+            &'a self,
+            _handle: &MediaHandle,
+        ) -> BoxedFetchFuture<'a, anyhow::Result<Vec<u8>>> {
+            Box::pin(async move { Ok(b"\x89PNG\r\n\x1a\nfake".to_vec()) })
+        }
+    }
+
     impl ChannelRuntime for MockTelegramRuntime {
         fn capabilities(&self) -> ChannelCapabilities {
             ChannelCapabilities::new(StreamMode::Off, ReplyMode::MessageTool)
@@ -435,6 +447,10 @@ mod tests {
 
         fn sender(&self, _target: &DeliveryTarget) -> Option<Arc<dyn ChannelSender>> {
             Some(self.sender.clone())
+        }
+
+        fn media_fetcher(&self) -> Option<Arc<dyn MediaFetcher>> {
+            Some(Arc::new(FixedFetcher))
         }
     }
 
@@ -595,5 +611,26 @@ mod tests {
 
         let request = serde_json::to_string(&model.requests()[0]).unwrap();
         assert!(request.contains("media://inbound/"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_vision_model_inlines_a_photo() {
+        let model = ScriptedModel::with_vision(vec![text_events("ok")], true);
+        let sender = MockChannelSender::new();
+        let manager = telegram_manager(model.clone(), sender).await;
+
+        let (poller, _) = poller(vec![Ok(vec![private_photo_update()])]);
+        let (_, events) = poller.poll_once(0).await.unwrap();
+        let sink: Arc<dyn OutputSink> = Arc::new(NullSink);
+
+        for event in events {
+            deliver(&manager, event, &sink).await;
+        }
+
+        let request = &model.requests()[0];
+        assert!(
+            request.messages.iter().any(|m| m.content.contains_binary()),
+            "no inline image in {request:?}"
+        );
     }
 }
