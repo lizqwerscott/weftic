@@ -286,8 +286,9 @@ async fn run_session(
 
                 tracing::debug!(
                     target: "projection",
-                    "projected message:\n{}",
-                    message.content.texts().join("")
+                    "projected message ({} part(s)):\n{}",
+                    message.content.len(),
+                    message.content.texts().join("\n")
                 );
 
                 // Nothing model-facing in the batch (e.g. a service message):
