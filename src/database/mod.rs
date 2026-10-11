@@ -6,6 +6,7 @@ use deadpool_sqlite::{Config, Hook, HookError, Manager, Pool, Runtime};
 use rusqlite::Connection;
 
 pub mod events;
+pub mod identities;
 
 const PRAGMAS: &str = "
     PRAGMA journal_mode = WAL;
@@ -52,6 +53,7 @@ impl Database {
         };
 
         database.init_schema().await?;
+        database.init_identity_schema().await?;
 
         Ok(database)
     }

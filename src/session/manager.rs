@@ -14,6 +14,7 @@ use crate::channel::SessionKey;
 use crate::database::Database;
 use crate::database::events::{AppendOutcome, StoredEvent};
 use crate::event::{Event, EventId, EventOrigin, Part};
+use crate::identity::ObservedIdentity;
 use crate::output::OutputSink;
 use crate::session::Session;
 use crate::session::history::TurnStatus;
@@ -106,6 +107,8 @@ impl SessionManager {
         match self.database.append_event(&event).await? {
             AppendOutcome::Duplicate(event_id) => Ok(IngestOutcome::Duplicate { event_id }),
             AppendOutcome::Appended(event_id) => {
+                self.record_identity(&event).await;
+
                 if admission == Admission::Denied {
                     tracing::info!(target: "access", "dropped event for `{key}` (not admitted)");
                     return Ok(IngestOutcome::Ignored { event_id });
@@ -129,6 +132,18 @@ impl SessionManager {
 
                 Ok(IngestOutcome::Turn { event_id })
             }
+        }
+    }
+
+    /// Best-effort: record the sender's current name. The event itself is the
+    /// authority; a name we fail to record is re-observed on the next message.
+    async fn record_identity(&self, event: &Event) {
+        let Some(observed) = ObservedIdentity::from_event(event) else {
+            return;
+        };
+
+        if let Err(error) = self.database.observe_identity(&observed).await {
+            tracing::warn!(target: "identity", "recording the sender name failed: {error:#}");
         }
     }
 
@@ -504,5 +519,31 @@ mod tests {
 
         assert!(reply.await.unwrap().is_ok());
         assert_eq!(sink.content(), "hello back");
+    }
+
+    #[tokio::test]
+    async fn ingest_records_the_sender_name() {
+        let model = ScriptedModel::text_reply("hello back");
+        let manager = session_manager(model.clone()).await;
+
+        let mut event = event("hello");
+        let EventOrigin::Platform(platform) = &mut event.origin else {
+            panic!("helper must build a platform event");
+        };
+        platform.envelope.sender_name = Some("Local User".to_string());
+
+        let (reply, _sink) = enqueue(&manager, event).await;
+        assert!(reply.await.unwrap().is_ok());
+
+        let names = manager
+            .database
+            .current_names(&[ActorRef::new(LOCAL_SENDER)])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            names,
+            HashMap::from([(ActorRef::new(LOCAL_SENDER), "Local User".to_string())])
+        );
     }
 }
