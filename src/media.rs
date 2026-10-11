@@ -221,7 +221,7 @@ pub fn tag_event(event: &mut Event) {
         };
 
         if media.uri.is_none() {
-            media.uri = Some(MediaStore::uri(&media.handle, media.mime.as_deref()));
+            media.uri = Some(MediaStore::uri(media.key(), media.mime.as_deref()));
         }
     }
 }
@@ -254,11 +254,26 @@ mod tests {
         Part::Photo {
             media: Media {
                 handle: handle(file_id),
+                unique_id: MediaHandle::default(),
                 uri,
                 mime: Some("image/jpeg".to_string()),
             },
             caption: None,
         }
+    }
+
+    #[test]
+    fn the_store_key_prefers_the_unique_id() {
+        let media = Media::new(
+            handle("download-handle"),
+            handle("stable-id"),
+            Some("image/jpeg".to_string()),
+        );
+
+        assert_eq!(media.key(), &handle("stable-id"));
+
+        let fallback = Media::new(handle("only"), MediaHandle::default(), None);
+        assert_eq!(fallback.key(), &handle("only"));
     }
 
     fn stored_media(part: Part) -> StoredEvent {

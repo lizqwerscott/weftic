@@ -600,6 +600,7 @@ mod tests {
         platform.parts = vec![Part::Photo {
             media: Media::new(
                 MediaHandle("file".to_string()),
+                MediaHandle("unique".to_string()),
                 Some("image/jpeg".to_string()),
             ),
             caption: Some("look".to_string()),
@@ -626,6 +627,7 @@ mod tests {
         };
         let mut stored_media = Media::new(
             MediaHandle("file".to_string()),
+            MediaHandle("unique".to_string()),
             Some("image/jpeg".to_string()),
         );
         stored_media.uri = Some("media://inbound/abc".to_string());
@@ -657,6 +659,7 @@ mod tests {
         platform.parts = vec![Part::Sticker {
             media: Media {
                 handle: MediaHandle("file".to_string()),
+                unique_id: MediaHandle("unique".to_string()),
                 uri: Some("media://inbound/x.tgs".to_string()),
                 mime: Some("application/x-tgsticker".to_string()),
             },

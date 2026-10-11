@@ -277,24 +277,39 @@ pub enum Part {
 /// stable reference and mime, once known (§11.5).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Media {
-    /// The platform's raw handle (e.g. a Telegram `file_id`).
+    /// The platform's download handle (e.g. a Telegram `file_id`).
     pub handle: MediaHandle,
+    /// The platform's stable media id (e.g. a Telegram `file_unique_id`); the
+    /// store key, since a `file_id` may vary over time even for one bot.
+    #[serde(default)]
+    pub unique_id: MediaHandle,
     /// `media://inbound/<id>`, filled at ingest; `None` until then.
     pub uri: Option<String>,
     pub mime: Option<String>,
 }
 
 impl Media {
-    pub fn new(handle: MediaHandle, mime: Option<String>) -> Self {
+    pub fn new(handle: MediaHandle, unique_id: MediaHandle, mime: Option<String>) -> Self {
         Self {
             handle,
+            unique_id,
             uri: None,
             mime,
         }
     }
+
+    /// The stable identity to key the store by; falls back to `handle` when the
+    /// platform gave no separate unique id.
+    pub fn key(&self) -> &MediaHandle {
+        if self.unique_id.0.is_empty() {
+            &self.handle
+        } else {
+            &self.unique_id
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaHandle(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

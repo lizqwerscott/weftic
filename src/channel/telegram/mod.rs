@@ -290,6 +290,7 @@ fn build_parts(message: &Message) -> Vec<Part> {
         parts.push(Part::Photo {
             media: Media::new(
                 MediaHandle(largest.file_id.clone()),
+                MediaHandle(largest.file_unique_id.clone()),
                 Some("image/jpeg".to_string()),
             ),
             caption: caption.clone(),
@@ -298,7 +299,11 @@ fn build_parts(message: &Message) -> Vec<Part> {
 
     if let Some(voice) = &message.voice {
         parts.push(Part::Voice {
-            media: Media::new(MediaHandle(voice.file_id.clone()), voice.mime_type.clone()),
+            media: Media::new(
+                MediaHandle(voice.file_id.clone()),
+                MediaHandle(voice.file_unique_id.clone()),
+                voice.mime_type.clone(),
+            ),
             duration_s: Some(voice.duration.max(0) as u32),
             caption: caption.clone(),
         });
@@ -308,6 +313,7 @@ fn build_parts(message: &Message) -> Vec<Part> {
         parts.push(Part::Document {
             media: Media::new(
                 MediaHandle(document.file_id.clone()),
+                MediaHandle(document.file_unique_id.clone()),
                 document.mime_type.clone(),
             ),
             file_name: document.file_name.clone(),
@@ -326,7 +332,11 @@ fn build_parts(message: &Message) -> Vec<Part> {
         };
 
         parts.push(Part::Sticker {
-            media: Media::new(MediaHandle(sticker.file_id.clone()), Some(mime.to_string())),
+            media: Media::new(
+                MediaHandle(sticker.file_id.clone()),
+                MediaHandle(sticker.file_unique_id.clone()),
+                Some(mime.to_string()),
+            ),
         });
     }
 
@@ -505,6 +515,8 @@ struct MessageEntity {
 #[derive(Debug, Deserialize)]
 struct PhotoSize {
     file_id: String,
+    #[serde(default)]
+    file_unique_id: String,
     width: i64,
     height: i64,
 }
@@ -512,6 +524,8 @@ struct PhotoSize {
 #[derive(Debug, Deserialize)]
 struct Voice {
     file_id: String,
+    #[serde(default)]
+    file_unique_id: String,
     duration: i64,
     mime_type: Option<String>,
 }
@@ -519,6 +533,8 @@ struct Voice {
 #[derive(Debug, Deserialize)]
 struct Document {
     file_id: String,
+    #[serde(default)]
+    file_unique_id: String,
     file_name: Option<String>,
     mime_type: Option<String>,
 }
@@ -526,6 +542,8 @@ struct Document {
 #[derive(Debug, Deserialize)]
 struct Sticker {
     file_id: String,
+    #[serde(default)]
+    file_unique_id: String,
     #[serde(default)]
     is_animated: bool,
     #[serde(default)]
@@ -751,8 +769,8 @@ mod tests {
                 "chat": {"id": 5, "type": "private", "first_name": "Dee"},
                 "caption": "look",
                 "photo": [
-                    {"file_id": "small", "width": 90, "height": 60},
-                    {"file_id": "large", "width": 1280, "height": 720}
+                    {"file_id": "small", "file_unique_id": "small-u", "width": 90, "height": 60},
+                    {"file_id": "large", "file_unique_id": "large-u", "width": 1280, "height": 720}
                 ]
             }
         });
@@ -774,6 +792,7 @@ mod tests {
                 vec![Part::Photo {
                     media: Media::new(
                         MediaHandle("large".to_string()),
+                        MediaHandle("large-u".to_string()),
                         Some("image/jpeg".to_string()),
                     ),
                     caption: Some("look".to_string()),

@@ -628,6 +628,7 @@ mod tests {
         platform.parts = vec![Part::Photo {
             media: Media::new(
                 MediaHandle("file".to_string()),
+                MediaHandle("stable".to_string()),
                 Some("image/jpeg".to_string()),
             ),
             caption: None,
@@ -649,7 +650,9 @@ mod tests {
             panic!("expected a photo part");
         };
 
-        let expected = MediaStore::uri(&MediaHandle("file".to_string()), Some("image/jpeg"));
+        // The store key comes from the stable id, but the download handle is the
+        // original `file_id`.
+        let expected = MediaStore::uri(&MediaHandle("stable".to_string()), Some("image/jpeg"));
         assert_eq!(media.handle, MediaHandle("file".to_string()));
         assert_eq!(media.uri.as_deref(), Some(expected.as_str()));
     }
