@@ -112,11 +112,11 @@ fn triggers(envelope: &Envelope, parts: &[Part]) -> bool {
         return true;
     }
 
-    let replied_to_bot = matches!(
-        (&envelope.reply_to, &envelope.bot),
-        (Some(reply), Some(bot)) if reply.sender_platform_id == bot.platform_id
-    );
-    if replied_to_bot {
+    if envelope
+        .bot
+        .as_ref()
+        .is_some_and(|bot| envelope.replies_to(&bot.platform_id))
+    {
         return true;
     }
 

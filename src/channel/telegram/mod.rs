@@ -11,8 +11,9 @@ use crate::channel::adapter::{AdapterError, ChannelAdapter, RawUpdate};
 use crate::channel::telegram::client::BotMe;
 use crate::channel::{Channel, ChannelChatType, DeliveryTarget};
 use crate::event::{
-    BotRef, DedupKey, Delivery, Entity, EntityKind, Envelope, Event, EventOrigin, MediaHandle,
-    Mention, Part, PlatformEvent, PlatformKind, ReplyRef, ServiceKind, Timestamp,
+    BotRef, DedupKey, Delivery, Entity, EntityKind, Envelope, Event, EventOrigin, ExternalReply,
+    MediaHandle, Mention, Part, PlatformEvent, PlatformKind, Quote, ReplyOrigin, ReplyPeer,
+    ReplyRef, ServiceKind, Timestamp,
 };
 use crate::identity::member_ref;
 
@@ -56,6 +57,33 @@ impl TelegramAdapter {
             None => PlatformKind::Unknown,
         };
 
+        // A quote only means something next to the reply it belongs to, so it is
+        // dropped whenever neither reply form could be resolved.
+        let reply_to = message.reply_to_message.as_deref().and_then(|replied| {
+            let (sender_id, sender_name) = sender_identity(replied).ok()?;
+            let sender = member_ref(Channel::Telegram, account, &sender_id);
+
+            Some(ReplyRef {
+                message_id: replied.message_id.to_string(),
+                sender,
+                sender_platform_id: sender_id,
+                sender_name,
+                snippet: reply_snippet(replied),
+            })
+        });
+        let external_reply = message
+            .external_reply
+            .as_ref()
+            .map(|external| external_reply(external, account));
+
+        let quote = if reply_to.is_some() || external_reply.is_some() {
+            message.quote.as_ref().map(|quote| Quote {
+                text: truncate_chars(&quote.text, REPLY_SNIPPET_MAX_CHARS),
+            })
+        } else {
+            None
+        };
+
         let envelope = Envelope {
             sender,
             sender_platform_id: sender_id,
@@ -66,19 +94,9 @@ impl TelegramAdapter {
             edit_date: message
                 .edit_date
                 .map(|seconds| Timestamp::from_millis(seconds.saturating_mul(1000))),
-            reply_to: message.reply_to_message.as_deref().and_then(|replied| {
-                let (sender_id, sender_name) = sender_identity(replied).ok()?;
-                let sender = member_ref(Channel::Telegram, account, &sender_id);
-
-                Some(ReplyRef {
-                    message_id: replied.message_id.to_string(),
-                    sender,
-                    sender_platform_id: sender_id,
-                    sender_name,
-                    snippet: reply_snippet(replied),
-                })
-            }),
-            quote: None,
+            reply_to,
+            external_reply,
+            quote,
             forward: None,
             mentions: map_mentions(message, account, &self.bot),
             reply_markup: None,
@@ -142,16 +160,55 @@ fn sender_identity(message: &Message) -> Result<(String, String), AdapterError> 
     if let Some(user) = &message.from {
         Ok((user.id.to_string(), display_name(user)))
     } else if let Some(chat) = &message.sender_chat {
-        Ok((
-            chat.id.to_string(),
-            chat.title
-                .clone()
-                .unwrap_or_else(|| format!("chat {}", chat.id)),
-        ))
+        Ok((chat.id.to_string(), chat_display_name(chat)))
     } else {
         Err(AdapterError::MissingField {
             field: "message.from".to_string(),
         })
+    }
+}
+
+fn chat_display_name(chat: &Chat) -> String {
+    chat.title
+        .clone()
+        .unwrap_or_else(|| format!("chat {}", chat.id))
+}
+
+/// An external reply only exposes the origin, never the quoted text.
+fn external_reply(external: &ExternalReplyInfo, account: &str) -> ExternalReply {
+    ExternalReply {
+        message_id: external.message_id.map(|id| id.to_string()),
+        chat_id: external.chat.as_ref().map(|chat| chat.id.to_string()),
+        origin: match &external.origin {
+            MessageOrigin::User { sender_user } => {
+                ReplyOrigin::User(reply_peer(sender_user, account))
+            }
+            MessageOrigin::Chat { sender_chat } => {
+                ReplyOrigin::Chat(chat_peer(sender_chat, account))
+            }
+            MessageOrigin::Channel { chat } => ReplyOrigin::Channel(chat_peer(chat, account)),
+            MessageOrigin::HiddenUser { sender_user_name } => ReplyOrigin::HiddenUser {
+                name: sender_user_name.clone(),
+            },
+        },
+    }
+}
+
+fn reply_peer(user: &User, account: &str) -> ReplyPeer {
+    let platform_id = user.id.to_string();
+    ReplyPeer {
+        actor: member_ref(Channel::Telegram, account, &platform_id),
+        platform_id,
+        name: display_name(user),
+    }
+}
+
+fn chat_peer(chat: &Chat, account: &str) -> ReplyPeer {
+    let platform_id = chat.id.to_string();
+    ReplyPeer {
+        actor: member_ref(Channel::Telegram, account, &platform_id),
+        platform_id,
+        name: chat_display_name(chat),
     }
 }
 
@@ -394,6 +451,8 @@ struct Message {
     caption: Option<String>,
     entities: Option<Vec<MessageEntity>>,
     reply_to_message: Option<Box<Message>>,
+    external_reply: Option<ExternalReplyInfo>,
+    quote: Option<TextQuote>,
     photo: Option<Vec<PhotoSize>>,
     voice: Option<Voice>,
     document: Option<Document>,
@@ -454,6 +513,30 @@ struct Sticker {
     file_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct TextQuote {
+    text: String,
+}
+
+/// A reply to a message from another chat (or a forum topic): the origin, the
+/// original chat when exposed, and maybe the original message id. The quoted
+/// text is not included.
+#[derive(Debug, Deserialize)]
+struct ExternalReplyInfo {
+    origin: MessageOrigin,
+    chat: Option<Chat>,
+    message_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum MessageOrigin {
+    User { sender_user: User },
+    HiddenUser { sender_user_name: String },
+    Chat { sender_chat: Chat },
+    Channel { chat: Chat },
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
@@ -507,6 +590,7 @@ mod tests {
                     date: Timestamp::from_millis(date_ms),
                     edit_date: edit_ms.map(Timestamp::from_millis),
                     reply_to,
+                    external_reply: None,
                     quote: None,
                     forward: None,
                     mentions: vec![],
@@ -716,6 +800,216 @@ mod tests {
                 snippet: Some("question".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn quote_reply_captures_the_quoted_fragment() {
+        let payload = json!({
+            "update_id": 116,
+            "message": {
+                "message_id": 22,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_500,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "answering",
+                "reply_to_message": {
+                    "message_id": 3,
+                    "from": {"id": 7, "is_bot": false, "first_name": "Quinn"},
+                    "date": 1_700_000_000,
+                    "chat": {"id": 5, "type": "private"},
+                    "text": "the original question"
+                },
+                "quote": {
+                    "text": "original question",
+                    "entities": [],
+                    "position": 4,
+                    "is_manual": true
+                }
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload.clone());
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(
+            platform.envelope.quote,
+            Some(Quote {
+                text: "original question".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_message_without_a_quote_carries_none() {
+        let payload = json!({
+            "update_id": 117,
+            "message": {
+                "message_id": 23,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_600,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "plain"
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(platform.envelope.quote, None);
+    }
+
+    #[test]
+    fn external_reply_from_another_chat_becomes_an_external_reply() {
+        let payload = json!({
+            "update_id": 118,
+            "message": {
+                "message_id": 24,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_700,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "answering elsewhere",
+                "external_reply": {
+                    "origin": {
+                        "type": "channel",
+                        "date": 1_700_000_000,
+                        "chat": {"id": -100999, "type": "channel", "title": "News"},
+                        "message_id": 55
+                    },
+                    "chat": {"id": -100999, "type": "channel", "title": "News"},
+                    "message_id": 55
+                }
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(platform.envelope.reply_to, None);
+        assert_eq!(
+            platform.envelope.external_reply,
+            Some(ExternalReply {
+                message_id: Some("55".to_string()),
+                chat_id: Some("-100999".to_string()),
+                origin: ReplyOrigin::Channel(ReplyPeer {
+                    actor: member_ref(Channel::Telegram, "default", "-100999"),
+                    platform_id: "-100999".to_string(),
+                    name: "News".to_string(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn external_reply_from_a_hidden_user_keeps_the_origin_without_an_id() {
+        let payload = json!({
+            "update_id": 119,
+            "message": {
+                "message_id": 25,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_800,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "answering",
+                "external_reply": {
+                    "origin": {
+                        "type": "hidden_user",
+                        "date": 1_700_000_000,
+                        "sender_user_name": "Anonymous"
+                    }
+                }
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(
+            platform.envelope.external_reply,
+            Some(ExternalReply {
+                message_id: None,
+                chat_id: None,
+                origin: ReplyOrigin::HiddenUser {
+                    name: "Anonymous".to_string(),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn a_long_quote_is_truncated_like_the_reply_snippet() {
+        let long = "q".repeat(REPLY_SNIPPET_MAX_CHARS + 10);
+        let payload = json!({
+            "update_id": 120,
+            "message": {
+                "message_id": 26,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_001_900,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "answering",
+                "reply_to_message": {
+                    "message_id": 3,
+                    "from": {"id": 7, "is_bot": false, "first_name": "Quinn"},
+                    "date": 1_700_000_000,
+                    "chat": {"id": 5, "type": "private"},
+                    "text": "the original question"
+                },
+                "quote": { "text": long }
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(
+            platform.envelope.quote,
+            Some(Quote {
+                text: format!("{}…", "q".repeat(REPLY_SNIPPET_MAX_CHARS)),
+            })
+        );
+    }
+
+    #[test]
+    fn a_quote_without_a_resolvable_reply_is_dropped() {
+        let payload = json!({
+            "update_id": 121,
+            "message": {
+                "message_id": 27,
+                "from": {"id": 5, "is_bot": false, "first_name": "Dee"},
+                "date": 1_700_002_000,
+                "chat": {"id": 5, "type": "private", "first_name": "Dee"},
+                "text": "answering",
+                "reply_to_message": {
+                    "message_id": 3,
+                    "date": 1_700_000_000,
+                    "chat": {"id": 5, "type": "private"},
+                    "text": "question"
+                },
+                "quote": { "text": "question" }
+            }
+        });
+        let raw = RawUpdate::new(Channel::Telegram, payload);
+
+        let events = adapter().normalize(&raw).unwrap();
+
+        let EventOrigin::Platform(platform) = &events[0].origin else {
+            panic!("expected a platform event");
+        };
+        assert_eq!(platform.envelope.reply_to, None);
+        assert_eq!(platform.envelope.quote, None);
     }
 
     #[test]

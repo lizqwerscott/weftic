@@ -34,6 +34,7 @@ impl Event {
                     date: Timestamp::now(),
                     edit_date: None,
                     reply_to: None,
+                    external_reply: None,
                     quote: None,
                     forward: None,
                     mentions: vec![],
@@ -135,6 +136,9 @@ pub struct Envelope {
     pub date: Timestamp,
     pub edit_date: Option<Timestamp>,
     pub reply_to: Option<ReplyRef>,
+    /// A reply to a message from another chat (Telegram `external_reply`), kept
+    /// separate from `reply_to` because the original is never inlined.
+    pub external_reply: Option<ExternalReply>,
     pub quote: Option<Quote>,
     pub forward: Option<ForwardOrigin>,
     pub mentions: Vec<Mention>,
@@ -161,6 +165,63 @@ pub struct ReplyRef {
     pub sender_name: String,
     pub sender_platform_id: String,
     pub snippet: Option<String>,
+}
+
+impl Envelope {
+    /// Whether this message replies to `platform_id`, in-chat or externally.
+    pub fn replies_to(&self, platform_id: &str) -> bool {
+        self.reply_to
+            .as_ref()
+            .is_some_and(|reply| reply.sender_platform_id == platform_id)
+            || self
+                .external_reply
+                .as_ref()
+                .and_then(ExternalReply::sender_platform_id)
+                == Some(platform_id)
+    }
+}
+
+/// A reply to a message from another chat or forum topic (Telegram
+/// `external_reply`). Unlike `ReplyRef`, the original message is never inlined,
+/// so there is no snippet and the id may be unavailable.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ExternalReply {
+    /// The replied message's id, when the platform exposes it (supergroup /
+    /// channel origins only).
+    pub message_id: Option<String>,
+    /// The chat the replied message came from, when the platform exposes it.
+    pub chat_id: Option<String>,
+    pub origin: ReplyOrigin,
+}
+
+impl ExternalReply {
+    /// The replied message's sender platform id, if it has one: a hidden user
+    /// exposes no id.
+    pub fn sender_platform_id(&self) -> Option<&str> {
+        match &self.origin {
+            ReplyOrigin::User(peer) | ReplyOrigin::Chat(peer) | ReplyOrigin::Channel(peer) => {
+                Some(peer.platform_id.as_str())
+            }
+            ReplyOrigin::HiddenUser { .. } => None,
+        }
+    }
+}
+
+/// Where the message an external reply points at came from.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReplyOrigin {
+    User(ReplyPeer),
+    Chat(ReplyPeer),
+    Channel(ReplyPeer),
+    HiddenUser { name: String },
+}
+
+/// A named, keyable sender behind an external reply.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ReplyPeer {
+    pub actor: ActorRef,
+    pub platform_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -277,6 +338,7 @@ mod tests {
                     date: Timestamp::from_millis(1_700_000_000_000),
                     edit_date: None,
                     reply_to: None,
+                    external_reply: None,
                     quote: None,
                     forward: None,
                     mentions: vec![],
