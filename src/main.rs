@@ -65,6 +65,8 @@ async fn main() -> Result<()> {
     ));
     engine.init()?;
 
+    info!("model-facing timestamps use {}", config.clock.label());
+
     let registry = registry_channels(&config).await?;
 
     if registry.is_empty() {
@@ -88,6 +90,7 @@ async fn main() -> Result<()> {
         "main",
         database.clone(),
         media,
+        config.clock,
     ));
 
     // Each channel's inbound loop gets its own task, so one slow channel can't

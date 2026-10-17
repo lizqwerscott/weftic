@@ -7,8 +7,10 @@ use figment::{
 };
 
 use crate::access::AccessPolicy;
+use crate::clock::Clock;
 use crate::config::{
     channel::{ChannelConfig, ChannelTemplates},
+    clock::ClockConfig,
     engine::EngineConfig,
     model_provider::{ModelRegister, load_model_config},
     storage::StorageConfig,
@@ -18,6 +20,7 @@ use crate::permissions::Permissions;
 use crate::{channel::Channel, config::workspace::WorkspaceConfig};
 
 pub mod channel;
+pub mod clock;
 pub mod engine;
 pub mod model_provider;
 pub mod storage;
@@ -33,6 +36,7 @@ pub struct Config {
     pub permissions: Permissions,
     pub access: AccessPolicy,
     pub workspace: WorkspaceConfig,
+    pub clock: Clock,
 }
 
 impl Config {
@@ -77,6 +81,13 @@ impl Config {
             AccessPolicy::default()
         };
 
+        let clock = if app_config.contains("clock") {
+            let clock: ClockConfig = app_config.extract_inner("clock")?;
+            clock.clock()?
+        } else {
+            Clock::utc()
+        };
+
         Ok(Self {
             model_register,
             system_prompt: app_config.extract_inner("system_prompt")?,
@@ -86,6 +97,7 @@ impl Config {
             permissions,
             access,
             workspace: app_config.extract_inner("workspace")?,
+            clock,
         })
     }
 

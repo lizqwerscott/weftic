@@ -19,6 +19,7 @@ use crate::{
 pub mod access;
 pub mod agent_engine;
 pub mod channel;
+pub mod clock;
 pub mod config;
 pub mod context;
 pub mod database;

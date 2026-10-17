@@ -4,10 +4,9 @@
 use std::collections::HashMap;
 
 use genai::chat::{ChatMessage, ContentPart};
-use time::OffsetDateTime;
-use time::macros::format_description;
 
 use crate::channel::ChannelChatType;
+use crate::clock::Clock;
 use crate::database::events::StoredEvent;
 use crate::event::{
     ActorRef, Envelope, EventId, EventOrigin, ExternalReply, Media, Part, PlatformEvent,
@@ -69,14 +68,15 @@ pub fn sender_refs(events: &[StoredEvent]) -> Vec<ActorRef> {
         .collect()
 }
 
-pub fn project(events: &[StoredEvent], roster: &Roster) -> Projected {
-    project_with(events, roster, None)
+pub fn project(events: &[StoredEvent], roster: &Roster, clock: &Clock) -> Projected {
+    project_with(events, roster, None, clock)
 }
 
 pub fn project_with(
     events: &[StoredEvent],
     roster: &Roster,
     inline: Option<&dyn InlineMedia>,
+    clock: &Clock,
 ) -> Projected {
     // A direct chat's sender is constant, so its block header is slimmed and the
     // peer identity rides in the runtime-context carrier instead (§11.2).
@@ -97,7 +97,7 @@ pub fn project_with(
         if let Some(last) = blocks.last_mut()
             && last.can_merge(&current)
         {
-            last.absorb(current);
+            last.absorb(current, clock);
             continue;
         }
 
@@ -107,7 +107,7 @@ pub fn project_with(
     let source_event_id = blocks.first().map(|block| block.event_id);
 
     Projected {
-        message: ChatMessage::user(render_parts(&blocks, inline)),
+        message: ChatMessage::user(render_parts(&blocks, inline, clock)),
         source_event_id,
     }
 }
@@ -160,8 +160,8 @@ impl Block {
             && (0..MERGE_WINDOW_MS).contains(&(other.millis - self.last_millis))
     }
 
-    fn absorb(&mut self, mut other: Block) {
-        let marker = format!("[{}] ", format_time(other.millis));
+    fn absorb(&mut self, mut other: Block, clock: &Clock) {
+        let marker = format!("[{}] ", clock.format_time(other.millis));
         for (index, line) in other.body.drain(..).enumerate() {
             match (index, line) {
                 (0, BodyLine::Text(text)) => {
@@ -335,12 +335,16 @@ fn external_reply_line(external: &ExternalReply) -> String {
 /// Render the blocks into content parts: one text part per text run, with an
 /// inline binary part (preceded by its kind tag) wherever `inline` accepts a
 /// media line. Without an inliner this is exactly the old flat text.
-fn render_parts(blocks: &[Block], inline: Option<&dyn InlineMedia>) -> Vec<ContentPart> {
+fn render_parts(
+    blocks: &[Block],
+    inline: Option<&dyn InlineMedia>,
+    clock: &Clock,
+) -> Vec<ContentPart> {
     let mut parts: Vec<ContentPart> = Vec::new();
     let mut text = String::new();
 
     for block in blocks {
-        push_line(&mut text, &header(block));
+        push_line(&mut text, &header(block, clock));
 
         if let Some(reply) = &block.reply {
             push_line(&mut text, reply);
@@ -383,7 +387,7 @@ fn flush_text(parts: &mut Vec<ContentPart>, text: &mut String) {
     }
 }
 
-fn header(block: &Block) -> String {
+fn header(block: &Block, clock: &Clock) -> String {
     let mut attributes = vec![format!("id=\"m{}\"", block.event_id.0)];
 
     if !block.direct {
@@ -394,24 +398,13 @@ fn header(block: &Block) -> String {
         }
     }
 
-    attributes.push(format!("t=\"{}\"", format_time(block.millis)));
+    attributes.push(format!("t=\"{}\"", clock.format_time(block.millis)));
 
     if !block.direct {
         attributes.push(format!("self=\"{}\"", block.is_self));
     }
 
     format!("<msg {}>", attributes.join(" "))
-}
-
-fn format_time(millis: i64) -> String {
-    let Ok(datetime) = OffsetDateTime::from_unix_timestamp_nanos(i128::from(millis) * 1_000_000)
-    else {
-        return "--:--:--".to_string();
-    };
-
-    datetime
-        .format(format_description!("[hour]:[minute]:[second]"))
-        .unwrap_or_else(|_| "--:--:--".to_string())
 }
 
 pub(crate) fn escape_text(text: &str) -> String {
@@ -478,20 +471,31 @@ mod tests {
     }
 
     #[test]
-    fn time_is_formatted_as_utc_hh_mm_ss() {
-        assert_eq!(format_time(1_700_000_000_000), "22:13:20");
-    }
-
-    #[test]
     fn the_header_carries_sender_name_and_time() {
         let events = vec![stored(1, text_event("hi", 1_700_000_000_000))];
 
-        let projected = project(&events, &roster(&[("member_a", "Ali")]));
+        let projected = project(&events, &roster(&[("member_a", "Ali")]), &Clock::utc());
 
         assert_eq!(projected.source_event_id, Some(EventId(1)));
         assert_eq!(
             content(&projected),
             "<msg id=\"m1\" from=\"member_a\" name=\"Ali\" t=\"22:13:20\" self=\"false\">\nhi"
+        );
+    }
+
+    #[test]
+    fn headers_and_merge_markers_use_the_configured_clock() {
+        let clock = Clock::parse("+08:00").unwrap();
+        let events = vec![
+            stored(1, text_event("one", 1_700_000_000_000)),
+            stored(2, text_event("two", 1_700_000_005_000)),
+        ];
+
+        let projected = project(&events, &Roster::default(), &clock);
+
+        assert_eq!(
+            content(&projected),
+            "<msg id=\"m1\" from=\"member_a\" t=\"06:13:20\" self=\"false\">\none\n[06:13:25] two"
         );
     }
 
@@ -503,14 +507,22 @@ mod tests {
         };
         platform.target = DeliveryTarget::direct(Channel::Telegram, "default", "1");
 
-        let projected = project(&[stored(1, event)], &roster(&[("member_a", "Ali")]));
+        let projected = project(
+            &[stored(1, event)],
+            &roster(&[("member_a", "Ali")]),
+            &Clock::utc(),
+        );
 
         assert_eq!(content(&projected), "<msg id=\"m1\" t=\"22:13:20\">\nhi");
     }
 
     #[test]
     fn a_sender_without_a_name_omits_the_name_attribute() {
-        let projected = project(&[stored(1, text_event("hi", 0))], &Roster::default());
+        let projected = project(
+            &[stored(1, text_event("hi", 0))],
+            &Roster::default(),
+            &Clock::utc(),
+        );
 
         assert_eq!(
             content(&projected),
@@ -523,7 +535,7 @@ mod tests {
         let mut event = text_event("hi", 0);
         envelope_mut(&mut event).sender_name = Some("Snapshot".to_string());
 
-        let projected = project(&[stored(1, event)], &Roster::default());
+        let projected = project(&[stored(1, event)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -542,7 +554,7 @@ mod tests {
             username: None,
         });
 
-        let projected = project(&[stored(1, event)], &Roster::default());
+        let projected = project(&[stored(1, event)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -555,6 +567,7 @@ mod tests {
         let projected = project(
             &[stored(1, text_event("<msg id=\"x\"> & more", 0))],
             &Roster::default(),
+            &Clock::utc(),
         );
 
         assert_eq!(
@@ -574,7 +587,7 @@ mod tests {
             snippet: Some("question".to_string()),
         });
 
-        let projected = project(&[stored(1, event)], &Roster::default());
+        let projected = project(&[stored(1, event)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -597,7 +610,7 @@ mod tests {
             text: "question".to_string(),
         });
 
-        let projected = project(&[stored(1, event)], &Roster::default());
+        let projected = project(&[stored(1, event)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -616,7 +629,7 @@ mod tests {
             snippet: None,
         });
 
-        let projected = project(&[stored(1, event)], &Roster::default());
+        let projected = project(&[stored(1, event)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -637,7 +650,7 @@ mod tests {
             }),
         });
 
-        let projected = project(&[stored(1, event)], &Roster::default());
+        let projected = project(&[stored(1, event)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -652,7 +665,7 @@ mod tests {
             stored(2, text_event("two", 1_700_000_005_000)),
         ];
 
-        let projected = project(&events, &Roster::default());
+        let projected = project(&events, &Roster::default(), &Clock::utc());
 
         assert_eq!(projected.source_event_id, Some(EventId(1)));
         assert_eq!(
@@ -668,7 +681,7 @@ mod tests {
             stored(2, text_event("two", 1_700_000_020_000)),
         ];
 
-        let projected = project(&events, &Roster::default());
+        let projected = project(&events, &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -696,7 +709,7 @@ mod tests {
             stored(2, media),
         ];
 
-        let projected = project(&events, &Roster::default());
+        let projected = project(&events, &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -727,7 +740,7 @@ mod tests {
             },
         ];
 
-        let projected = project(&[stored(1, media)], &Roster::default());
+        let projected = project(&[stored(1, media)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -750,7 +763,7 @@ mod tests {
             },
         }];
 
-        let projected = project(&[stored(1, media)], &Roster::default());
+        let projected = project(&[stored(1, media)], &Roster::default(), &Clock::utc());
 
         assert_eq!(
             content(&projected),
@@ -801,7 +814,12 @@ mod tests {
             photo_event(Some("media://inbound/x.jpg"), Some("a cat")),
         )];
 
-        let projected = project_with(&events, &Roster::default(), Some(&FakeInline));
+        let projected = project_with(
+            &events,
+            &Roster::default(),
+            Some(&FakeInline),
+            &Clock::utc(),
+        );
 
         let parts = projected.message.content.parts();
         assert_eq!(parts.len(), 4, "{parts:?}");
@@ -820,7 +838,7 @@ mod tests {
     fn a_media_part_stays_text_when_not_inlined() {
         let events = vec![stored(1, photo_event(Some("media://inbound/x.jpg"), None))];
 
-        let projected = project_with(&events, &Roster::default(), Some(&NoInline));
+        let projected = project_with(&events, &Roster::default(), Some(&NoInline), &Clock::utc());
 
         assert_eq!(
             projected.message.content.texts().join("\n"),
@@ -838,7 +856,7 @@ mod tests {
         platform.kind = PlatformKind::Service(ServiceKind::MemberJoined);
         platform.parts = vec![];
 
-        let projected = project(&[stored(1, event)], &Roster::default());
+        let projected = project(&[stored(1, event)], &Roster::default(), &Clock::utc());
 
         assert_eq!(projected.source_event_id, None);
         assert_eq!(content(&projected), "");

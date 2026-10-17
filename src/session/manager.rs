@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use crate::access::Admission;
 use crate::agent_engine::AgentEngine;
 use crate::channel::SessionKey;
+use crate::clock::Clock;
 use crate::context;
 use crate::database::Database;
 use crate::database::events::{AppendOutcome, StoredEvent};
@@ -78,6 +79,8 @@ pub struct SessionManager {
     database: Arc<Database>,
     media: Arc<MediaStore>,
     agent_id: String,
+    /// The fixed zone every model-facing timestamp is rendered in (§11.2).
+    clock: Clock,
 }
 
 impl SessionManager {
@@ -87,6 +90,7 @@ impl SessionManager {
         agent_id: impl Into<String>,
         database: Arc<Database>,
         media: Arc<MediaStore>,
+        clock: Clock,
     ) -> Self {
         Self {
             engine,
@@ -95,6 +99,7 @@ impl SessionManager {
             database,
             media,
             agent_id: agent_id.into(),
+            clock,
         }
     }
 
@@ -205,6 +210,7 @@ impl SessionManager {
             self.media.clone(),
             fetcher,
             self.database.clone(),
+            self.clock,
         ));
         let handle = SessionHandle { tx };
 
@@ -276,6 +282,7 @@ async fn run_session(
     media: Arc<MediaStore>,
     fetcher: Option<Arc<dyn MediaFetcher>>,
     database: Arc<Database>,
+    clock: Clock,
 ) {
     while let Some(input) = rx.recv().await {
         match input {
@@ -301,7 +308,7 @@ async fn run_session(
                 let Projected {
                     message,
                     source_event_id,
-                } = projection::project_with(&events, &roster, inliner.as_deref());
+                } = projection::project_with(&events, &roster, inliner.as_deref(), &clock);
 
                 tracing::debug!(
                     target: "projection",
@@ -317,7 +324,7 @@ async fn run_session(
                     continue;
                 };
 
-                let carrier = context::carrier(&events, &roster, session.turn_count());
+                let carrier = context::carrier(&events, &roster, session.turn_count(), &clock);
                 if let Some(carrier) = &carrier {
                     tracing::debug!(
                         target: "context",
@@ -479,7 +486,7 @@ mod tests {
             AccessPolicy::default(),
         );
 
-        SessionManager::new(engine, resolver, "main", database, media)
+        SessionManager::new(engine, resolver, "main", database, media, Clock::utc())
     }
 
     async fn enqueue(

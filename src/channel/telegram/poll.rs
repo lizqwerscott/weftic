@@ -270,6 +270,7 @@ mod tests {
     use crate::channel::registry::{ChannelRegistry, ChannelRuntime};
     use crate::channel::sender::ChannelSender;
     use crate::channel::sender::testing::{MockChannelSender, MockMessage};
+    use crate::clock::Clock;
     use crate::config::channel::ChannelTemplates;
     use crate::config::model_provider::testing::{ScriptedModel, text_events, tool_call_events};
     use crate::config::system_prompt::SystemPromptConfig;
@@ -519,6 +520,7 @@ mod tests {
             "main",
             Arc::new(Database::in_memory().await.unwrap()),
             media,
+            Clock::utc(),
         )
     }
 

@@ -30,5 +30,11 @@ dm_allow = ["telegram:123456"]
 # id = "telegram:-1001234567890"
 # deny = ["telegram:999"]
 
+[clock]
+# Fixed UTC offset for every timestamp the model sees: the `<msg t="...">`
+# headers and the runtime-context time line. Defaults to `UTC` when omitted.
+# Accepts `+08:00`, `-05:30`, `UTC+8`, `UTC`.
+# utc_offset = "+08:00"
+
 [system_prompt]
 character_path = "./characters/default.md"
