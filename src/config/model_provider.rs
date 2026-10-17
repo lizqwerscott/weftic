@@ -173,7 +173,7 @@ impl ProviderConfig {
             Self::Openai {
                 base_url, api_key, ..
             } => {
-                let base_url = base_url.clone();
+                let base_url = endpoint_base_url(base_url);
                 let api_key = api_key.clone();
 
                 let target_resolver = ServiceTargetResolver::from_resolver_fn(
@@ -433,6 +433,20 @@ fn models_url(base_url: &str) -> String {
     format!("{}/models", base_url.trim_end_matches('/'))
 }
 
+/// The base URL handed to genai's OpenAI adapter.
+///
+/// The adapter derives the request URL with `Url::join("chat/completions")`,
+/// and `Url::join` *replaces* the last path segment unless the base ends with
+/// `/`. Without the trailing slash `http://host/v1` becomes
+/// `http://host/chat/completions` and every turn 404s.
+fn endpoint_base_url(base_url: &str) -> String {
+    if base_url.ends_with('/') {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/")
+    }
+}
+
 /// Where the startup probe points: an explicit `health_url` when configured,
 /// otherwise the OpenAI-style `{base_url}/models`.
 fn health_endpoint(base_url: &str, health_url: Option<&str>) -> String {
@@ -671,6 +685,24 @@ mod tests {
     fn models_url_appends_the_models_path_once() {
         assert_eq!(models_url("http://host/v1"), "http://host/v1/models");
         assert_eq!(models_url("http://host/v1/"), "http://host/v1/models");
+    }
+
+    #[test]
+    fn endpoint_base_url_keeps_the_path_prefix_joinable() {
+        assert_eq!(
+            endpoint_base_url("http://127.0.0.1:18200/v1"),
+            "http://127.0.0.1:18200/v1/"
+        );
+        assert_eq!(
+            endpoint_base_url("http://127.0.0.1:18200/v1/"),
+            "http://127.0.0.1:18200/v1/"
+        );
+
+        let joined = reqwest::Url::parse(&endpoint_base_url("http://host/v1"))
+            .unwrap()
+            .join("chat/completions")
+            .unwrap();
+        assert_eq!(joined.as_str(), "http://host/v1/chat/completions");
     }
 
     #[test]
