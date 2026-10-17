@@ -175,30 +175,48 @@ impl SessionManager {
     }
 
     /// Get or create the session task for `key`. The lock is held only for the
-    /// map lookup/insert — never across an `await`.
-    fn ensure(&self, key: &SessionKey) -> Result<SessionHandle> {
+    /// map lookup / insert — never across an `await`.
+    async fn ensure(&self, key: &SessionKey) -> Result<SessionHandle> {
+        {
+            let sessions = self
+                .sessions
+                .lock()
+                .expect("session registry mutex poisoned");
+            if let Some(entry) = sessions.get(key) {
+                return Ok(entry.handle.clone());
+            }
+        }
+
+        // Load the transcript before spawning the session task. This is DB I/O
+        // and must not run while holding the registry mutex (§5.1).
+        let spec = self.resolver.spec_for(key)?;
+        let history = self.database.load_history(key).await?;
+        let session = Session::new_with_history(spec, history)?;
+
+        let fetcher = key.parse().and_then(|target| {
+            let channel = *target.channel();
+            self.resolver.media_fetcher(channel)
+        });
+        let (tx, rx) = mpsc::channel(SESSION_QUEUE);
+        let task = tokio::spawn(run_session(
+            self.engine.clone(),
+            session,
+            rx,
+            self.media.clone(),
+            fetcher,
+            self.database.clone(),
+        ));
+        let handle = SessionHandle { tx };
+
+        // Re-check under the lock: a concurrent first-touch may have won the
+        // race. The loser's task sees its channel close and exits.
         let mut sessions = self
             .sessions
             .lock()
             .expect("session registry mutex poisoned");
-
         match sessions.entry(key.clone()) {
             Entry::Occupied(existing) => Ok(existing.get().handle.clone()),
             Entry::Vacant(vacant) => {
-                let session = Session::new(self.resolver.spec_for(key)?)?;
-                let fetcher = key.parse().and_then(|target| {
-                    let channel = *target.channel();
-                    self.resolver.media_fetcher(channel)
-                });
-                let (tx, rx) = mpsc::channel(SESSION_QUEUE);
-                let task = tokio::spawn(run_session(
-                    self.engine.clone(),
-                    session,
-                    rx,
-                    self.media.clone(),
-                    fetcher,
-                ));
-                let handle = SessionHandle { tx };
                 vacant.insert(SessionEntry {
                     handle: handle.clone(),
                     task,
@@ -209,7 +227,7 @@ impl SessionManager {
     }
 
     async fn submit(&self, key: &SessionKey, input: SessionInput) -> Result<()> {
-        let handle = self.ensure(key)?;
+        let handle = self.ensure(key).await?;
         handle.submit(input).await
     }
 
@@ -257,6 +275,7 @@ async fn run_session(
     mut rx: mpsc::Receiver<SessionInput>,
     media: Arc<MediaStore>,
     fetcher: Option<Arc<dyn MediaFetcher>>,
+    database: Arc<Database>,
 ) {
     while let Some(input) = rx.recv().await {
         match input {
@@ -316,6 +335,17 @@ async fn run_session(
                             TurnStatus::Failed(err) => Err(anyhow::Error::new(err.clone())),
                             _ => Ok(()),
                         };
+
+                        let turn_idx = session.turn_count();
+                        if let Err(error) =
+                            database.append_turn(session.key(), turn_idx, &turn).await
+                        {
+                            tracing::error!(
+                                target: "transcript",
+                                "persisting turn {turn_idx} for `{}` failed: {error:#}",
+                                session.key().as_str()
+                            );
+                        }
 
                         session.append_turn(turn);
 
@@ -406,6 +436,14 @@ mod tests {
     }
 
     async fn session_manager(model: Arc<ScriptedModel>) -> SessionManager {
+        let database = Arc::new(Database::in_memory().await.unwrap());
+        session_manager_with_database(model, database).await
+    }
+
+    async fn session_manager_with_database(
+        model: Arc<ScriptedModel>,
+        database: Arc<Database>,
+    ) -> SessionManager {
         let config = SystemPromptConfig {
             character_path: PathBuf::from("./characters/default.md"),
         };
@@ -441,13 +479,7 @@ mod tests {
             AccessPolicy::default(),
         );
 
-        SessionManager::new(
-            engine,
-            resolver,
-            "main",
-            Arc::new(Database::in_memory().await.unwrap()),
-            media,
-        )
+        SessionManager::new(engine, resolver, "main", database, media)
     }
 
     async fn enqueue(
@@ -597,6 +629,27 @@ mod tests {
 
         assert!(reply.await.unwrap().is_ok());
         assert_eq!(sink.content(), "hello back");
+    }
+
+    #[tokio::test]
+    async fn a_restarted_session_replays_its_transcript() {
+        let database = Arc::new(Database::in_memory().await.unwrap());
+
+        let first_model = ScriptedModel::new(vec![text_events("REPLY_ONE")]);
+        let first = session_manager_with_database(first_model.clone(), database.clone()).await;
+        let (first_reply, _) = enqueue(&first, event("USER_ONE")).await;
+        assert!(first_reply.await.unwrap().is_ok());
+        first.shutdown().await;
+
+        let second_model = ScriptedModel::new(vec![text_events("REPLY_TWO")]);
+        let second = session_manager_with_database(second_model.clone(), database.clone()).await;
+        let (second_reply, _) = enqueue(&second, event("USER_TWO")).await;
+        assert!(second_reply.await.unwrap().is_ok());
+
+        let second_request = request_json(&second_model, 0);
+        assert!(second_request.contains("USER_ONE"), "{second_request}");
+        assert!(second_request.contains("REPLY_ONE"), "{second_request}");
+        assert!(second_request.contains("USER_TWO"), "{second_request}");
     }
 
     #[tokio::test]

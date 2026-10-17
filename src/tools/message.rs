@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use genai::chat::ToolResponse;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -23,6 +24,26 @@ pub struct MessageTool {
 impl MessageTool {
     pub fn new(sender: Arc<dyn ChannelSender>) -> Self {
         Self { sender }
+    }
+
+    /// The fixed prefix of a successful `send` result. The transcript backfill
+    /// (§8.3) lifts the platform id out of this exact text, so it must stay
+    /// stable.
+    const SENT_PREFIX: &str = "sent message ";
+
+    /// Lift the platform message id out of a successful `send` result, for the
+    /// transcript backfill (§8.3). `None` for `edit` results and for any other
+    /// tool's output.
+    pub(crate) fn sent_message_id_of(response: &ToolResponse) -> Option<String> {
+        if response.fn_name.as_deref() != Some(MessageTool::NAME) {
+            return None;
+        }
+
+        response
+            .content
+            .strip_prefix(Self::SENT_PREFIX)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
     }
 }
 
@@ -75,7 +96,7 @@ impl Tool for MessageTool {
             match args.action.as_str() {
                 "send" => {
                     let sent = self.sender.send_message(&text).await?;
-                    Ok(format!("sent message {}", sent.id))
+                    Ok(format!("{}{}", Self::SENT_PREFIX, sent.id))
                 }
                 "edit" => {
                     let message_id = args
@@ -211,5 +232,23 @@ mod tests {
 
         assert_eq!(router.names(), vec!["message"]);
         assert_eq!(router.declarations()[0].name.as_str(), "message");
+    }
+
+    #[test]
+    fn sent_message_id_is_lifted_only_from_a_successful_send() {
+        let send = ToolResponse::new("call_1", "sent message 42").with_fn_name(MessageTool::NAME);
+        assert_eq!(
+            MessageTool::sent_message_id_of(&send),
+            Some("42".to_string())
+        );
+
+        let edit = ToolResponse::new("call_2", "edited message 42").with_fn_name(MessageTool::NAME);
+        assert_eq!(MessageTool::sent_message_id_of(&edit), None);
+
+        let other_tool = ToolResponse::new("call_3", "sent message 42").with_fn_name("read");
+        assert_eq!(MessageTool::sent_message_id_of(&other_tool), None);
+
+        let empty_id = ToolResponse::new("call_4", "sent message ").with_fn_name(MessageTool::NAME);
+        assert_eq!(MessageTool::sent_message_id_of(&empty_id), None);
     }
 }

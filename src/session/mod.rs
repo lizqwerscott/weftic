@@ -42,15 +42,23 @@ pub struct Session {
 
 impl Session {
     pub fn new(spec: SessionSpec) -> anyhow::Result<Self> {
+        Self::new_with_history(spec, SessionHistory::default())
+    }
+
+    pub fn new_with_history(spec: SessionSpec, history: SessionHistory) -> anyhow::Result<Self> {
         Ok(Self {
             key: spec.key,
-            history: SessionHistory::default(),
+            history,
             workspace: Arc::new(Workspace::new(&spec.workspace_policy)?),
             template: spec.template,
             mode: spec.mode,
             role: spec.role,
             binding: spec.binding,
         })
+    }
+
+    pub fn key(&self) -> &SessionKey {
+        &self.key
     }
 
     pub fn workspace(&self) -> Arc<Workspace> {

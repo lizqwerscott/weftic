@@ -7,6 +7,7 @@ use rusqlite::Connection;
 
 pub mod events;
 pub mod identities;
+pub mod transcript;
 
 const PRAGMAS: &str = "
     PRAGMA journal_mode = WAL;
@@ -54,6 +55,7 @@ impl Database {
 
         database.init_schema().await?;
         database.init_identity_schema().await?;
+        database.init_transcript_schema().await?;
 
         Ok(database)
     }

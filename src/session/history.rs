@@ -9,6 +9,23 @@ pub struct SessionStep {
     source_event_id: Option<EventId>,
 }
 
+impl SessionStep {
+    pub fn new(data: ChatMessage, source_event_id: Option<EventId>) -> Self {
+        Self {
+            data,
+            source_event_id,
+        }
+    }
+
+    pub fn data(&self) -> &ChatMessage {
+        &self.data
+    }
+
+    pub fn source_event_id(&self) -> Option<EventId> {
+        self.source_event_id
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TurnError {
     Request(String),
@@ -80,6 +97,22 @@ impl SessionTurn {
 
     pub fn status(&self) -> &TurnStatus {
         &self.status
+    }
+
+    /// Rebuild a turn from already-stored steps (e.g. loaded from the
+    /// transcript). Historical turns are always `Complete`: their runtime
+    /// status / usage were only meaningful while the turn was in flight.
+    pub fn from_steps(steps: Vec<SessionStep>) -> Self {
+        Self {
+            steps,
+            status: TurnStatus::Complete,
+            stop_reason: None,
+            usage: None,
+        }
+    }
+
+    pub fn steps(&self) -> &[SessionStep] {
+        &self.steps
     }
 
     fn to_chat_request(&self) -> ChatRequest {
